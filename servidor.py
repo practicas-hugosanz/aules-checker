@@ -367,13 +367,23 @@ class Handler(BaseHTTPRequestHandler):
                             materiales = core.fetch_course_material(session, item["course_id"], item["course"])
                         except Exception as e:
                             core.log(f"No se pudo descargar el temario: {e}")
-                    resultado = ia.borrador(item, acc_dir, carpeta, materiales)
+                    # Tarea en cadena: la anterior y tu respuesta a ella (entregada en Aules o tu borrador).
+                    previa = None
+                    anterior = str(datos.get("anterior") or "")
+                    if anterior and anterior != item["id"]:
+                        previo = next((i for i in core.load_items(session) if i["id"] == anterior), None)
+                        if previo:
+                            previa = core.respuesta_previa(session, previo, ia.cargar_cache(acc_dir))
+                    resultado = ia.borrador(item, acc_dir, carpeta, materiales, previa)
                 else:
                     return self._json(404, {"error": "Acción desconocida."})
 
                 cache = ia.cargar_cache(acc_dir)
                 entrada = cache.setdefault(item["id"], {})
                 entrada["resumen" if accion == "resumen" else "borrador"] = resultado.get("resumen") if accion == "resumen" else resultado
+                if accion == "borrador":
+                    # Se recuerda de qué tarea continúa, para dejarla elegida la próxima vez.
+                    entrada["anterior"] = str(datos.get("anterior") or "")
                 ia.guardar_cache(acc_dir, cache)
         except ia.IAError as e:
             return self._json(400, {"error": str(e)})

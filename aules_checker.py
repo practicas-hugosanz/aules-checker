@@ -277,10 +277,10 @@ class Ctx:
             return None
 
 
-def download_attachments(ctx, course_name, item_name, attachments):
+def download_attachments(ctx, course_name, item_name, attachments, raiz="adjuntos"):
     if not attachments:
         return []
-    folder = os.path.join(ctx.acc_dir, "adjuntos", sanitize(course_name), sanitize(item_name))
+    folder = os.path.join(ctx.acc_dir, raiz, sanitize(course_name), sanitize(item_name))
     os.makedirs(folder, exist_ok=True)
     saved = []
     for att in attachments:
@@ -871,6 +871,54 @@ def siguiente_dia_lectivo(desde, sin_clase):
             return dia
         dia += timedelta(days=1)
     return dia
+
+
+RESPUESTA_EXTS = (".pdf", ".docx", ".pptx", ".txt", ".md", ".csv", ".sql", ".py", ".html", ".json", ".java", ".js", ".css",
+                  ".xml", ".c", ".cpp", ".sh", ".php")
+
+
+def respuesta_entregada(session, item):
+    """Lo que entregaste en Aules en esa tarea: el texto en línea y los archivos (se descargan). Devuelve (texto, rutas)."""
+    modulo, _, assignid = item["id"].partition("_")
+    if modulo not in ("assign", "assigngva") or not assignid.isdigit():
+        return "", []
+    acc_dir = account_dir(session["username"])
+    st = call_ws(session["base_url"], session["token"], f"mod_{modulo}_get_submission_status", {"assignid": int(assignid)})
+    last = st.get("lastattempt") or {}
+    entrega = last.get("submission") or last.get("teamsubmission") or {}
+    if entrega.get("status") not in ("submitted", "draft", "reopened"):
+        return "", []
+    textos, archivos = [], []
+    for plugin in entrega.get("plugins") or []:
+        for campo in plugin.get("editorfields") or []:
+            texto = html_to_text(campo.get("text") or "").strip()
+            if texto:
+                textos.append(texto)
+        for area in plugin.get("fileareas") or []:
+            archivos += [f for f in area.get("files") or [] if f.get("filename", "").lower().endswith(RESPUESTA_EXTS)
+                         and (f.get("filesize") or 0) <= MATERIAL_MAX_BYTES]
+    ctx = Ctx(base_url=session["base_url"], token=session["token"], userid=0, acc_dir=acc_dir, course_names={}, course_params={})
+    guardados = download_attachments(ctx, item["course"], item["name"], archivos[:8], raiz="entregas")
+    return "\n\n".join(textos), [os.path.join(acc_dir, g["path"]) for g in guardados]
+
+
+def respuesta_previa(session, previa, cache_ia):
+    """Tu respuesta a una tarea anterior: primero lo que entregaste en Aules; si no, el borrador que te hizo la IA
+    (leído tal como esté ahora, con lo que hayas corregido)."""
+    texto, rutas, origen = "", [], ""
+    try:
+        texto, rutas = respuesta_entregada(session, previa)
+        origen = "lo que entregaste en Aules" if (texto or rutas) else ""
+    except SessionExpired:
+        raise
+    except Exception as e:
+        log(f"No se pudo leer tu entrega de «{previa['name']}»: {e}")
+    if not origen:
+        borrador = (cache_ia.get(previa["id"]) or {}).get("borrador") or {}
+        carpeta = borrador.get("carpeta") or ""
+        rutas = [os.path.join(carpeta, n) for n in borrador.get("archivos") or [] if os.path.isfile(os.path.join(carpeta, n))]
+        origen = "tu borrador de esa tarea (tal como está ahora en tu carpeta)" if rutas else ""
+    return {"item": previa, "texto": texto, "rutas": rutas, "origen": origen}
 
 
 def fetch_course_material(session, course_id, course_name, limit=12):

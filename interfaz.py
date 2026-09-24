@@ -48,6 +48,7 @@ ICONS = {
     "settings": '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     "columnas": '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
     "papelera": '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
@@ -390,6 +391,10 @@ details.notas .notas-link { margin: 4px 12px 8px; }
   border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12.5px; cursor: pointer; transition: border-color .15s, color .15s; }
 .ia-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ia-btn[disabled] { opacity: .6; cursor: progress; }
+.ia-cadena { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); max-width: 100%; }
+.ia-cadena select { font: inherit; font-size: 12.5px; color: var(--text); background: var(--card); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 8px; max-width: 320px; min-width: 0; text-overflow: ellipsis; }
+.ia-cadena select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ia-bloque { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
   background: var(--card-2); border-radius: 10px; }
 .ia-titulo { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 650; color: var(--accent);
@@ -521,13 +526,15 @@ REPORT_JS = """
             if (dc.error) throw new Error(dc.error);
             if (!dc.carpeta) { aviso.remove(); return; }
             carpeta = dc.carpeta;
-            aviso.textContent = 'Leyendo adjuntos y temario, y escribiendo el borrador en ' + carpeta
+            var cadena = caja.querySelector('[data-anterior]');
+            aviso.textContent = (cadena && cadena.value ? 'Leyendo tu respuesta a «' + cadena.selectedOptions[0].textContent.replace(/ [(][^()]*[)]$/, '') + '», ' : 'Leyendo ')
+              + 'adjuntos y temario, y escribiendo el borrador en ' + carpeta
               + '… Tarda varios minutos (con modelos gratuitos, hasta 10). Puedes seguir usando la página.';
           }
           var r = await fetch('/ia/' + accion, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: id, carpeta: carpeta })
+            body: JSON.stringify({ id: id, carpeta: carpeta, anterior: (caja.querySelector('[data-anterior]') || {}).value || '' })
           });
           var d = await r.json();
           aviso.remove();
@@ -1161,10 +1168,60 @@ def _files_html(attachments):
     ) + "</div>"
 
 
-def _ia_html(a, cache):
+RE_CADENA = re.compile(
+    r"(pr[aà]ctica|tarea|ejercicio|activitat|actividad|entrega)\s+(anterior|previa|pr[eè]via)"
+    r"|continuaci[oó]n de|partiendo de (la|el|tu)|a partir de (la|el|tu) (pr[aà]ctica|tarea|ejercicio)", re.I)
+
+
+def sugerir_anterior(a, candidatas):
+    """La tarea que esta continúa: «Práctica 2» → «Práctica 1», o la última anterior si el enunciado lo dice."""
+    nombre = a["name"].lower().strip()
+    for c in candidatas:
+        otro = c["name"].lower().strip()
+        i = next((k for k, (x, y) in enumerate(zip(nombre, otro)) if x != y), None)
+        if i is None or not (nombre[i].isdigit() and otro[i].isdigit()):
+            continue
+        while i > 0 and nombre[i - 1].isdigit():
+            i -= 1
+        if int(re.match(r"\d+", otro[i:]).group()) == int(re.match(r"\d+", nombre[i:]).group()) - 1:
+            return c["id"]
+    if RE_CADENA.search(f'{a.get("summary", "")} {a.get("summary_file", "")}') and a["duedate"]:
+        previas = [c for c in candidatas if c["duedate"] and c["duedate"] < a["duedate"]]
+        if previas:
+            return max(previas, key=lambda c: c["duedate"])["id"]
+    return ""
+
+
+def _cadena_html(a, datos, candidatas, cache):
+    if not candidatas:
+        return ""
+    sugerida = sugerir_anterior(a, candidatas)
+    elegida = datos["anterior"] if "anterior" in datos else sugerida
+    opciones = ['<option value="">Ninguna (tarea independiente)</option>']
+    for c in sorted(candidatas, key=lambda c: (not c["duedate"], -(c["duedate"] or 0))):
+        if c["done"] and c.get("status"):
+            estado = "entregada"
+        elif (cache.get(c["id"]) or {}).get("borrador"):
+            estado = "borrador IA"
+        else:
+            estado = "sin respuesta"
+        extra = " · sugerida" if c["id"] == sugerida else ""
+        opciones.append(
+            f'<option value="{html.escape(c["id"])}"{" selected" if c["id"] == elegida else ""}>'
+            f'{html.escape(c["name"][:70])} ({estado}{extra})</option>'
+        )
+    return (
+        f'<label class="ia-cadena" title="Si esta tarea sigue a otra, la IA parte de tu respuesta a aquella: '
+        f'lo que entregaste en Aules o, si no, tu borrador">{icon("link", 13)}<span>Continúa de</span>'
+        f'<select data-anterior>{"".join(opciones)}</select></label>'
+    )
+
+
+def _ia_html(a, cache, candidatas=()):
     if a["kind"] == "aviso":
         return ""
-    datos = (cache or {}).get(a["id"], {})
+    cache = cache or {}
+    datos = cache.get(a["id"], {})
     salida = ""
     if datos.get("resumen"):
         salida += (
@@ -1184,6 +1241,7 @@ def _ia_html(a, cache):
         f'<div class="ia-actions">'
         f'<button class="ia-btn" data-accion="resumen">{icon("sparkles", 13)}Resumen IA</button>'
         f'<button class="ia-btn" data-accion="borrador">{icon("pencil", 13)}Hacer borrador</button>'
+        f'{_cadena_html(a, datos, candidatas, cache)}'
         f'</div><div class="ia-out">{salida}</div></div>'
     )
 
@@ -1612,7 +1670,9 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
         nota_item = f'<div class="nota-item">{_nota_html(nota, now_ts, con_nombre=False)}</div>' if nota else ""
         search = html.escape(f'{a["name"]} {a["course"]} {a["summary"]} {a.get("summary_file", "")}'.lower())
         classes = f'item kind-{kind} urg-{urgency(a)}' + (" is-done" if a["done"] else "")
-        extra_attr, extra = "", _ia_html(a, ia_cache)
+        candidatas = [c for c in by_course.get(a["course"], []) if c["id"] != a["id"] and c["kind"] != "aviso"
+                      and c["id"].split("_")[0] in ("assign", "assigngva")]
+        extra_attr, extra = "", _ia_html(a, ia_cache, candidatas)
         if a.get("propia"):
             if a["summary"]:
                 desc = _desc_html(a["summary"], "Ver notas")

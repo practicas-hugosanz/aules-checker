@@ -1,14 +1,14 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "cambios": [
-    "Primera versión con actualizaciones automáticas desde GitHub"
+    "Tareas en cadena: «Hacer borrador» puede continuar la tarea anterior a partir de lo que entregaste en Aules o de tu borrador"
   ],
   "archivos": {
-    "aules_checker.py": "59f133bd3317f45a6b974fde058197840cced8846efac1ca9d746809c565cd42",
-    "servidor.py": "636aaef0af03fbef0a90d3e5f38f106406d0119bc2574666ba3beb2b2d64b3cb",
-    "interfaz.py": "de1e5dbafbbdc8c5bd78c62444772df4cc823c1556845ba5e0982655c59f1adc",
-    "ia.py": "6a6d8cb18daedc57f69870041b8f08594b010f66dc5191b147aff3ba3adb68eb",
-    "actualizador.py": "2531cbb63bd783b8308a50e51505aea51dcf6f0860885986001b1fbce57367c9",
+    "aules_checker.py": "0ec4b14934fcef7798084da8be2c479acb910e7942b46efc0cc77d71790deeaf",
+    "servidor.py": "99fb14edc5eecabc0321b1f26789a66e61acf4f6b373e9f60c28a7989dde8c32",
+    "interfaz.py": "ab1ca04077164c33104a047df908d217b48ce5ea049d39a14d128f5df42b97b9",
+    "ia.py": "62925cc0236a3510c81d0c1bf73506e10e91f797a4976778b013679a782ad84c",
+    "actualizador.py": "fd2e668a12a5eff00241c40e4e3a2a68cbd5c711543755892d9fb57b030088f9",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }
