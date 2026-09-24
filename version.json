@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "cambios": [
+    "Primera versión con actualizaciones automáticas desde GitHub"
+  ],
+  "archivos": {
+    "aules_checker.py": "59f133bd3317f45a6b974fde058197840cced8846efac1ca9d746809c565cd42",
+    "servidor.py": "636aaef0af03fbef0a90d3e5f38f106406d0119bc2574666ba3beb2b2d64b3cb",
+    "interfaz.py": "de1e5dbafbbdc8c5bd78c62444772df4cc823c1556845ba5e0982655c59f1adc",
+    "ia.py": "6a6d8cb18daedc57f69870041b8f08594b010f66dc5191b147aff3ba3adb68eb",
+    "actualizador.py": "2531cbb63bd783b8308a50e51505aea51dcf6f0860885986001b1fbce57367c9",
+    "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
+  }
+}

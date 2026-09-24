@@ -1,0 +1,17 @@
+# Solo se sube el código de la app. Todo lo demás (cuentas, sesión, contraseña, claves de IA, logs) se queda en tu PC.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/aules_checker.py
+!/servidor.py
+!/interfaz.py
+!/ia.py
+!/actualizador.py
+!/requirements.txt
+!/version.json
+!/crear_instalador.py
+!/publicar.py
+!/para_compartir/
+/para_compartir/*
+!/para_compartir/Instalar Aules.bat
