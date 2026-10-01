@@ -15,14 +15,14 @@ import time
 
 import requests
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 # Usuario y repositorio de GitHub de donde salen las versiones nuevas.
 REPO = "practicas-hugosanz/aules-checker"
 RAMA = "main"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Lo que se publica y se actualiza. Nunca datos: nada de cuentas/, session.json ni ajustes.json.
-ARCHIVOS = ("aules_checker.py", "servidor.py", "interfaz.py", "ia.py", "actualizador.py", "requirements.txt")
+ARCHIVOS = ("aules_checker.py", "servidor.py", "interfaz.py", "temas.py", "ia.py", "actualizador.py", "requirements.txt")
 NOMBRE_VALIDO = re.compile(r"^[a-z_]+\.(py|txt)$")
 HUELLA_VALIDA = re.compile(r"^[0-9a-f]{64}$")
 COMPROBAR_CADA_SEGUNDOS = 6 * 3600

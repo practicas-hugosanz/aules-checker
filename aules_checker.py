@@ -230,6 +230,63 @@ def login(username, password, base_url=DEFAULT_BASE_URL):
     return session
 
 
+def _rutas_foto(session):
+    acc_dir = account_dir(session["username"])
+    return os.path.join(acc_dir, "foto"), os.path.join(acc_dir, "foto.json")
+
+
+def actualizar_foto(session, site_info):
+    """Descarga la foto de perfil de Aules cuando cambia. Sin foto propia se borra y la app usa las iniciales."""
+    ruta, ruta_datos = _rutas_foto(session)
+    url = site_info.get("userpictureurl") or ""
+    # Quien no ha subido foto recibe la imagen genérica del tema (theme/image.php/.../u/f1), no un archivo suyo.
+    if "/pluginfile.php/" not in url or "/user/icon/" not in url:
+        for f in (ruta, ruta_datos):
+            if os.path.exists(f):
+                os.remove(f)
+        return
+    try:
+        with open(ruta_datos, "r", encoding="utf-8") as f:
+            previo = json.load(f)
+    except (OSError, ValueError):
+        previo = {}
+    # La URL lleva "rev=": cambia cuando cambias la foto en Aules, así que solo se descarga entonces.
+    if previo.get("url") == url and os.path.exists(ruta):
+        return
+    # La dirección normal pide la sesión web de Aules; la del servicio web acepta el token de la app.
+    descarga = url.replace("/pluginfile.php/", "/webservice/pluginfile.php/", 1)
+    r = http.get(f"{descarga}{'&' if '?' in descarga else '?'}token={session['token']}", timeout=20)
+    r.raise_for_status()
+    tipo = r.headers.get("Content-Type", "").split(";")[0].strip()
+    if not tipo.startswith("image/") or tipo == "image/svg+xml":
+        return
+    write_atomic(ruta, r.content)
+    write_atomic(ruta_datos, json.dumps({"url": url, "tipo": tipo}))
+
+
+def cargar_foto(session):
+    """(bytes, tipo) de la foto de perfil guardada, o None si no hay."""
+    ruta, ruta_datos = _rutas_foto(session)
+    try:
+        with open(ruta_datos, "r", encoding="utf-8") as f:
+            tipo = json.load(f)["tipo"]
+        with open(ruta, "rb") as f:
+            return f.read(), tipo
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def version_foto(session):
+    """Cambia cuando cambia la foto, para que el navegador no muestre la anterior. Vacío si no hay foto."""
+    ruta, ruta_datos = _rutas_foto(session)
+    try:
+        with open(ruta_datos, "r", encoding="utf-8") as f:
+            url = json.load(f)["url"]
+    except (OSError, ValueError, KeyError):
+        return ""
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:10] if os.path.exists(ruta) else ""
+
+
 def _link_text(match):
     href = html.unescape(match.group(1)).strip()
     label = html.unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
@@ -1774,6 +1831,10 @@ def run_check(session):
     first_sync = raw_state is None
 
     site_info = call_ws(base_url, token, "core_webservice_get_site_info")
+    try:
+        actualizar_foto(session, site_info)
+    except Exception as e:
+        log(f"No se pudo descargar la foto de perfil: {e}")
     courses = call_ws(base_url, token, "core_enrol_get_users_courses", {"userid": site_info["userid"]})
     ctx = Ctx(
         base_url=base_url,
@@ -1868,15 +1929,16 @@ def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
     if horario:
         horario = dict(horario, no_lectivos=sin_clase)
 
+    foto = version_foto(session)
     # Huella del contenido: la página solo se recarga sola cuando cambia algo de verdad.
     firma = hashlib.sha1(
-        json.dumps([items, posts, notas, mensajes, materiales, practicas, warnings, sin_clase], sort_keys=True,
+        json.dumps([items, posts, notas, mensajes, materiales, practicas, warnings, sin_clase, foto], sort_keys=True,
                    ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
     write_atomic(
         report_path(session),
         build_report(items, posts, session, warnings, EXAM_REMINDER_HOURS[0], ia.cargar_cache(acc_dir), cursos,
-                     materiales, horario, notas, mensajes, firma, practicas),
+                     materiales, horario, notas, mensajes, firma, practicas, foto),
     )
     write_atomic(
         os.path.join(acc_dir, "estado.json"),

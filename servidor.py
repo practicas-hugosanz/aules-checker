@@ -39,6 +39,8 @@ class Handler(BaseHTTPRequestHandler):
         core.log("ERROR en el servidor: " + traceback.format_exc().strip().replace("\n", " | "))
 
     def _send(self, status, body, content_type="text/html; charset=utf-8", headers=None):
+        if isinstance(body, str) and content_type.startswith("text/html"):
+            body = interfaz.con_tema(body, ia.cargar_ajustes())
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -114,6 +116,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with open(report, "r", encoding="utf-8") as f:
                 return self._send(200, f.read())
+        if path == "/foto":
+            foto = core.cargar_foto(session)
+            if not foto:
+                return self._send(404, "Sin foto", "text/plain; charset=utf-8")
+            return self._send(200, foto[0], foto[1])
         if path.startswith("/adjuntos/"):
             return self._serve_attachment(session, path)
         if path.startswith("/material/"):
@@ -204,6 +211,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_ajustes()
         if path == "/ajustes/modelos":
             return self._post_modelos()
+        if path == "/ajustes/apariencia":
+            return self._post_apariencia()
         if path.startswith("/ia/"):
             return self._post_ia(session, path)
         if path.startswith("/api/"):
@@ -262,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
             correcto = "Ajustes guardados. Falta elegir el modelo: pulsa «Ver los modelos de mi clave»."
         else:
             correcto = "Ajustes guardados."
-        self._send(200, interfaz.render_ajustes(ia.cargar_ajustes(), ia.PROVEEDORES, error, correcto))
+        self._send(200, interfaz.render_ajustes(ia.cargar_ajustes(), ia.PROVEEDORES, error, correcto, seccion="ia"))
 
     def _post_api(self, session, path):
         try:
@@ -310,6 +319,18 @@ class Handler(BaseHTTPRequestHandler):
             core.log(f"ERROR API {path}: {e}")
             return self._json(500, {"error": str(e)})
         return self._json(404, {"error": "Acción desconocida."})
+
+    def _post_apariencia(self):
+        try:
+            datos = json.loads(self._body() or "{}")
+        except ValueError:
+            return self._json(400, {"error": "Petición mal formada."})
+        if datos.get("estilo") not in interfaz.TEMAS or datos.get("modo") not in interfaz.MODOS:
+            return self._json(400, {"error": "Estilo o modo desconocido."})
+        ajustes = ia.cargar_ajustes()
+        ajustes["estilo"], ajustes["modo"] = datos["estilo"], datos["modo"]
+        ia.guardar_ajustes(ajustes)
+        return self._json(200, {"ok": True})
 
     def _post_modelos(self):
         try:

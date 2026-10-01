@@ -7,6 +7,8 @@ import unicodedata
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
+from temas import MODOS, PREVIAS_CSS, TEMAS, TEMAS_CSS, con_tema, elegido
+
 DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 KIND_LABELS = {"examen": "Examen", "tarea": "Tarea", "aviso": "Aviso"}
@@ -15,6 +17,10 @@ DUE_PREFIXES = {"Abre": "abre ", "Cierra": "cierra "}
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 ICONS = {
+    "palette": '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+    "moon": '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "clock": '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
     "calendar": '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
@@ -116,8 +122,8 @@ def linkify(escaped_text):
     return URL_RE.sub(repl, escaped_text)
 
 
-BASE_CSS = """
-:root {
+# Colores del tema clásico; los demás temas (temas.py) cambian lo que necesitan.
+CLARO_VARS = """
   --bg: #f6f2ea; --bg-grad: #f6f2ea; --card: #ffffff; --card-2: #fbf8f2;
   --text: #221f1a; --muted: #776f63; --border: #e7dfd2; --shadow: 0 1px 0 rgba(60,45,20,.05), 0 8px 24px rgba(60,45,20,.06);
   --accent: #ee5a2c; --accent-2: #ee5a2c; --accent-ink: #c2441c; --accent-soft: #ffe3d8; --accent-sombra: #c2441c; --on-accent: #ffffff;
@@ -126,20 +132,26 @@ BASE_CSS = """
   --red: #c2361c; --red-soft: #ffe3d8; --amber: #946400; --amber-soft: #fff1c9;
   --green: #2f7a52; --green-soft: #dcefe4; --blue: #4a52c9; --blue-soft: #e3e6ff;
   --orange: #ee5a2c; --orange-soft: #ffe3d8; --gray-soft: #efe9df;
-  --display: "Bricolage Grotesque", "DM Sans", system-ui, sans-serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #171411; --bg-grad: #171411; --card: #221e1a; --card-2: #2a2520;
-    --text: #f3ede3; --muted: #a89f92; --border: #352f28; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
-    --accent: #ff7a4d; --accent-2: #ff7a4d; --accent-ink: #ff9a76; --accent-soft: #3a2319; --accent-sombra: #b8471f; --on-accent: #1a0f0a;
-    --rotulador: #f2c35b; --rotulador-ink: #2a1f00; --rotulador-trazo: #b4461d;
-    --ahora-bg: #2e2822; --ahora-text: #f3ede3; --ahora-muted: #a89f92; --ahora-borde: #40382f;
-    --red: #ff8f7a; --red-soft: #3a2319; --amber: #f2c35b; --amber-soft: #3a3018;
-    --green: #7fd0a3; --green-soft: #1e3027; --blue: #9aa2ff; --blue-soft: #262a4a;
-    --orange: #ff7a4d; --orange-soft: #3a2319; --gray-soft: #2a2520;
-  }
-}
+  --av-fg: 55% 32%; --av-bg: 75% 91%; color-scheme: light;
+"""
+OSCURO_VARS = """
+  --bg: #171411; --bg-grad: #171411; --card: #221e1a; --card-2: #2a2520;
+  --text: #f3ede3; --muted: #a89f92; --border: #352f28; --shadow: 0 1px 0 rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+  --accent: #ff7a4d; --accent-2: #ff7a4d; --accent-ink: #ff9a76; --accent-soft: #3a2319; --accent-sombra: #b8471f; --on-accent: #1a0f0a;
+  --rotulador: #f2c35b; --rotulador-ink: #2a1f00; --rotulador-trazo: #b4461d;
+  --ahora-bg: #2e2822; --ahora-text: #f3ede3; --ahora-muted: #a89f92; --ahora-borde: #40382f;
+  --red: #ff8f7a; --red-soft: #3a2319; --amber: #f2c35b; --amber-soft: #3a3018;
+  --green: #7fd0a3; --green-soft: #1e3027; --blue: #9aa2ff; --blue-soft: #262a4a;
+  --orange: #ff7a4d; --orange-soft: #3a2319; --gray-soft: #2a2520;
+  --av-fg: 75% 74%; --av-bg: 28% 20%; color-scheme: dark;
+"""
+
+# Modo: sin data-modo (o "auto") sigue al sistema; "claro" y "oscuro" lo fuerzan.
+BASE_CSS = (
+    ":root {" + CLARO_VARS + '  --display: "Bricolage Grotesque", "DM Sans", system-ui, sans-serif;\n}\n'
+    ':root[data-modo="oscuro"] {' + OSCURO_VARS + "}\n"
+    '@media (prefers-color-scheme: dark) { :root:not([data-modo="claro"]) {' + OSCURO_VARS + "} }\n"
+) + """
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-font-smoothing: antialiased; }
@@ -183,6 +195,8 @@ details[open] > summary > .chev-down { transform: rotate(180deg); }
   border-radius: 14px; box-shadow: 0 16px 48px rgba(16,20,40,.2); padding: 6px; z-index: 30; }
 .menu-head { display: flex; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .menu-head .acc-avatar { width: 36px; height: 36px; font-size: 13px; }
+.acc-avatar { position: relative; overflow: hidden; }
+.acc-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .menu-name { font-weight: 600; font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
 .menu-user { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .menu form { margin: 0; }
@@ -259,7 +273,6 @@ a.ahora:hover { border-color: var(--accent); }
 .course-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .avatar, .post-avatar { flex: none; display: grid; place-items: center; font-weight: 700;
   color: hsl(var(--hue) 65% 42%); background: hsl(var(--hue) 80% 94%); }
-@media (prefers-color-scheme: dark) { .avatar, .post-avatar { color: hsl(var(--hue) 80% 75%); background: hsl(var(--hue) 40% 18%); } }
 .avatar { width: 38px; height: 38px; border-radius: 11px; font-size: 14px; }
 .course-name { font-weight: 650; font-size: 15.5px; margin: 0; line-height: 1.3; }
 .course-meta { font-size: 12.5px; color: var(--muted); }
@@ -1038,11 +1051,8 @@ h1 { font-weight: 800; letter-spacing: -.03em; }
 .icon-btn, details.account > summary { box-shadow: none; }
 
 /* Avatares de asignatura: cuatro tonos suaves. */
-.avatar, .post-avatar { color: hsl(var(--hue) 55% 32%) !important; background: hsl(var(--hue) 75% 91%) !important;
+.avatar, .post-avatar { color: hsl(var(--hue) var(--av-fg)) !important; background: hsl(var(--hue) var(--av-bg)) !important;
   font-family: var(--display); font-weight: 700; }
-@media (prefers-color-scheme: dark) {
-  .avatar, .post-avatar { color: hsl(var(--hue) 75% 74%) !important; background: hsl(var(--hue) 28% 20%) !important; }
-}
 
 /* Cifras: cada una con su color suave. */
 .stats { gap: 10px; }
@@ -1139,7 +1149,7 @@ def _page(title, body, css, js=""):
 <title>{html.escape(title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
-<style>{BASE_CSS}{css}{TEMA_CSS}</style>
+<style>{BASE_CSS}{css}{TEMA_CSS}{TEMAS_CSS}</style>
 </head>
 <body>
 {body}
@@ -1634,7 +1644,7 @@ def asignatura_a_curso(asignatura, cursos):
 
 
 def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, courses=None, materials=None, horario=None,
-                 notas=None, mensajes=None, firma="", practicas=None):
+                 notas=None, mensajes=None, firma="", practicas=None, foto=""):
     now = datetime.now()
     now_ts = now.timestamp()
     notas = notas or []
@@ -1952,7 +1962,9 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
     firstname = pretty_name(session.get("firstname", ""))
     fullname = pretty_name(session.get("fullname") or session["username"])
     greeting = f'Hola, <em class="rotulador">{html.escape(firstname)}</em>' if firstname else "Tu resumen de Aules"
-    acc_initials = html.escape(initials(fullname))
+    # Con foto de Aules se ve la foto; si no carga, debajo siguen las iniciales.
+    acc_avatar = html.escape(initials(fullname)) + (
+        f'<img src="/foto?v={html.escape(foto)}" alt="" onerror="this.remove()">' if foto else "")
     counts = {
         "all": len(items),
         "examen": sum(1 for a in items if a["kind"] == "examen"),
@@ -1973,10 +1985,10 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
         <button class="icon-btn" type="submit" title="Actualizar ahora" aria-label="Actualizar ahora">{icon("refresh", 18)}</button>
       </form>
       <details class="account">
-        <summary aria-label="Menú de cuenta"><span class="acc-avatar">{acc_initials}</span><span class="acc-name">{html.escape(fullname)}</span>{icon("chevron-down", 16, "chev-down")}</summary>
+        <summary aria-label="Menú de cuenta"><span class="acc-avatar{" con-foto" if foto else ""}">{acc_avatar}</span><span class="acc-name">{html.escape(fullname)}</span>{icon("chevron-down", 16, "chev-down")}</summary>
         <div class="menu">
-          <div class="menu-head"><span class="acc-avatar">{acc_initials}</span><div><div class="menu-name">{html.escape(fullname)}</div><div class="menu-user">{html.escape(session["username"])}</div></div></div>
-          <a class="menu-item" href="/ajustes">{icon("settings")}Ajustes de IA</a>
+          <div class="menu-head"><span class="acc-avatar{" con-foto" if foto else ""}">{acc_avatar}</span><div><div class="menu-name">{html.escape(fullname)}</div><div class="menu-user">{html.escape(session["username"])}</div></div></div>
+          <a class="menu-item" href="/ajustes">{icon("settings")}Ajustes</a>
           <a class="menu-item" href="/login">{icon("users")}Cambiar de cuenta</a>
           <form method="post" action="/logout"><button class="menu-item danger" type="submit">{icon("log-out")}Cerrar sesión</button></form>
         </div>
@@ -2613,7 +2625,134 @@ def render_profesores(datos):
     return _page("Aules · Profesores", body, REPORT_CSS + HORARIO_CSS + PROFESORES_CSS, PROFESORES_JS)
 
 
-def render_ajustes(ajustes, proveedores, error="", correcto=""):
+APARIENCIA_CSS = """
+.temas { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: 10px; margin-bottom: 8px; }
+.tema { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; border: 1px solid var(--border);
+  border-radius: 14px; background: var(--card-2); cursor: pointer; font-size: 14px; font-weight: 700; transition: border-color .15s, box-shadow .15s; }
+.tema:hover { border-color: var(--muted); }
+.tema:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.tema:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tema input { position: absolute; opacity: 0; pointer-events: none; }
+.tema-nombre { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 2px; }
+.tema-nombre .i { color: var(--accent); visibility: hidden; }
+.tema:has(input:checked) .tema-nombre .i { visibility: visible; }
+.tema-desc { min-height: 38px; margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+.modos { display: flex; gap: 4px; padding: 4px; background: var(--card-2); border: 1px solid var(--border); border-radius: 999px; margin-bottom: 6px; }
+.modo { flex: 1; min-width: 0; display: flex; justify-content: center; align-items: center; gap: 6px; padding: 7px 6px; border-radius: 999px;
+  font-size: 13.5px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; }
+@media (max-width: 420px) { .modo .i { display: none; } }
+.modo input { position: absolute; opacity: 0; pointer-events: none; }
+.modo:has(input:checked) { background: var(--text); color: var(--bg); }
+.modo:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modo:has(input:disabled) { opacity: .4; cursor: not-allowed; }
+.modo-nota { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+.estado-apariencia { min-height: 18px; margin: 6px 0 18px; }
+.ajustes { place-items: start center; }
+.ajustes-col { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 16px; }
+.ajustes-col .auth-card { max-width: none; }
+.ajustes-col > .btn-link { margin-top: 0; }
+.ajustes-cab { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ajustes-cab h1 { margin: 0; font-size: clamp(28px, 5vw, 36px); letter-spacing: -.03em; }
+.pestanas-ajustes { display: flex; gap: 6px; flex-wrap: wrap; }
+.pestanas-ajustes .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text);
+  padding: 7px 14px; border-radius: 999px; font-size: 13.5px; font-weight: 600; text-decoration: none; }
+.pestanas-ajustes .chip:hover { border-color: var(--accent); }
+.pestanas-ajustes .chip.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.seccion-titulo { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-family: var(--display); font-size: 23px; letter-spacing: -.02em; }
+.seccion-titulo .i { color: var(--accent); }
+""" + PREVIAS_CSS
+
+PESTANAS_AJUSTES_JS = """
+(function () {
+  var pestanas = document.querySelectorAll('.pestanas-ajustes [data-seccion]');
+  function mostrar(clave) {
+    if (!document.getElementById(clave)) return;
+    pestanas.forEach(function (p) {
+      var activa = p.dataset.seccion === clave;
+      p.classList.toggle('active', activa);
+      p.setAttribute('aria-selected', activa ? 'true' : 'false');
+      document.getElementById(p.dataset.seccion).hidden = !activa;
+    });
+  }
+  pestanas.forEach(function (p) {
+    p.addEventListener('click', function (e) {
+      e.preventDefault();
+      mostrar(p.dataset.seccion);
+      history.replaceState(null, '', '#' + p.dataset.seccion);
+    });
+  });
+  if (location.hash) mostrar(location.hash.slice(1));
+})();
+"""
+
+APARIENCIA_JS = """
+(function () {
+  var form = document.getElementById('form-apariencia');
+  if (!form) return;
+  var estado = document.getElementById('estado-apariencia');
+  var desc = document.getElementById('tema-desc');
+  var nota = document.getElementById('modo-nota');
+  var raiz = document.documentElement;
+  function cargarFuente(url) {
+    if (!url || document.querySelector('link[href="' + url + '"]')) return;
+    var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = url; document.head.append(l);
+  }
+  // Un tema con un solo modo (p. ej. Terminal, siempre oscuro) bloquea los demás.
+  function ajustarModos() {
+    var tema = form.querySelector('input[name=estilo]:checked');
+    var permitidos = tema.dataset.modos.split(' ');
+    form.querySelectorAll('input[name=modo]').forEach(function (r) { r.disabled = permitidos.indexOf(r.value) === -1; });
+    nota.textContent = permitidos.length === 1 ? 'Este tema solo tiene modo ' + permitidos[0] + '.' : '';
+    desc.textContent = tema.dataset.desc;
+    var modo = form.querySelector('input[name=modo]:checked');
+    return permitidos.length === 1 ? permitidos[0] : (modo ? modo.value : 'auto');
+  }
+  ajustarModos();
+  form.addEventListener('change', function () {
+    var tema = form.querySelector('input[name=estilo]:checked');
+    var datos = { estilo: tema.value, modo: form.modo.value };
+    cargarFuente(tema.dataset.fuentes);
+    // Se ve al momento; luego se guarda para el resto de pantallas.
+    raiz.dataset.estilo = datos.estilo;
+    raiz.dataset.modo = ajustarModos();
+    estado.textContent = 'Guardando…';
+    fetch('/ajustes/apariencia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos) })
+      .then(function (r) { if (!r.ok) throw new Error(); estado.textContent = 'Guardado'; })
+      .catch(function () { estado.textContent = 'No se pudo guardar. Inténtalo de nuevo.'; });
+  });
+})();
+"""
+
+
+def _apariencia_html(ajustes):
+    actual, _ = elegido(ajustes)
+    modo_guardado = ajustes.get("modo") if ajustes.get("modo") in MODOS else "auto"
+    temas = "".join(
+        f'<label class="tema"><input type="radio" name="estilo" value="{clave}"{" checked" if clave == actual else ""} '
+        f'data-modos="{" ".join(t["modos"])}" data-fuentes="{html.escape(t["fuentes"])}" data-desc="{html.escape(t["descripcion"])}">'
+        f'<span class="pv" data-t="{clave}" aria-hidden="true"><span class="pv-h"></span><span class="pv-s"><i></i><i></i><i></i></span>'
+        f'<span class="pv-c"><b></b><u></u></span></span>'
+        f'<span class="tema-nombre">{html.escape(t["nombre"])}{icon("check-circle", 15)}</span></label>'
+        for clave, t in TEMAS.items()
+    )
+    iconos = {"auto": "monitor", "claro": "sun", "oscuro": "moon"}
+    modos = "".join(
+        f'<label class="modo"><input type="radio" name="modo" value="{clave}"{" checked" if clave == modo_guardado else ""}>'
+        f'{icon(iconos[clave], 14)}{nombre}</label>'
+        for clave, nombre in MODOS.items()
+    )
+    return f"""<h2 class="seccion-titulo">{icon("palette", 20)}Apariencia</h2>
+    <p class="auth-sub">Cada tema cambia toda la estética de la app: colores, letra, formas y cómo se colocan algunas cosas.</p>
+    <form id="form-apariencia" onsubmit="return false">
+      <div class="field"><span>Tema</span><div class="temas" role="radiogroup" aria-label="Tema">{temas}</div></div>
+      <p class="tema-desc" id="tema-desc">{html.escape(TEMAS[actual]["descripcion"])}</p>
+      <div class="field"><span>Modo</span><div class="modos" role="radiogroup" aria-label="Modo">{modos}</div>
+        <div class="modo-nota" id="modo-nota"></div></div>
+      <div class="estado estado-apariencia" id="estado-apariencia" role="status"></div>
+    </form>"""
+
+
+def render_ajustes(ajustes, proveedores, error="", correcto="", seccion="apariencia"):
     opciones = "".join(
         f'<option value="{p}" data-url="{html.escape(d.get("url", ""))}" data-clave="{int(d.get("clave", True))}"'
         f'{" selected" if ajustes["proveedor"] == p else ""}>{html.escape(d["nombre"])}</option>'
@@ -2631,14 +2770,27 @@ def render_ajustes(ajustes, proveedores, error="", correcto=""):
         if modelo
         else '<option value="">— elige un modelo —</option>'
     )
+    secciones = (("apariencia", "palette", "Apariencia"), ("ia", "sparkles", "Inteligencia artificial"))
+    pestanas = "".join(
+        f'<a class="chip{" active" if clave == seccion else ""}" href="#{clave}" role="tab" data-seccion="{clave}" '
+        f'aria-selected="{"true" if clave == seccion else "false"}" aria-controls="{clave}">{icon(ic, 15)}{texto}</a>'
+        for clave, ic, texto in secciones
+    )
     body = f"""{_nav()}
-<div class="auth">
-  <div class="auth-card ancha">
-    <div class="brand"><span class="brand-mark">{icon("settings", 20)}</span>Aules · Ajustes de IA</div>
-    <h1>Proveedor de IA</h1>
+<div class="auth ajustes">
+  <div class="ajustes-col">
+    <div class="ajustes-cab">
+      <h1>Ajustes</h1>
+      <div class="pestanas-ajustes" role="tablist" aria-label="Secciones de ajustes">{pestanas}</div>
+    </div>
+  <section class="auth-card ancha" id="apariencia" role="tabpanel"{"" if seccion == "apariencia" else " hidden"}>
+    {_apariencia_html(ajustes)}
+  </section>
+  <section class="auth-card ancha" id="ia" role="tabpanel"{"" if seccion == "ia" else " hidden"}>
+    <h2 class="seccion-titulo">{icon("sparkles", 20)}Inteligencia artificial</h2>
     <p class="auth-sub">Se usa para resumir tareas y escribir borradores. La clave se guarda solo en este equipo.</p>
     {avisos}
-    <form method="post" action="/ajustes" id="form-ajustes" data-clave="{1 if clave_guardada else 0}">
+    <form method="post" action="/ajustes#ia" id="form-ajustes" data-clave="{1 if clave_guardada else 0}">
       <label class="field"><span>1 · Proveedor</span>
         <div class="input select">{icon("sparkles")}<select name="proveedor">{opciones}</select></div>
       </label>
@@ -2660,11 +2812,12 @@ def render_ajustes(ajustes, proveedores, error="", correcto=""):
       <button class="btn-primary" type="submit" name="accion" value="probar">{icon("refresh", 18)}Guardar y probar</button>
       <button class="btn-link" type="submit" name="accion" value="guardar">Guardar sin probar</button>
     </form>
-    <a class="btn-link" href="/">{icon("arrow-left", 14)}Volver a mis tareas</a>
     <p class="auth-note">{icon("shield-check", 14)}<span>Los borradores son un punto de partida para que los revises y corrijas: la IA se ciñe al enunciado y al temario, pero puede equivocarse.</span></p>
+  </section>
+  <a class="btn-link" href="/">{icon("arrow-left", 14)}Volver a mis tareas</a>
   </div>
 </div>"""
-    return _page("Aules · Ajustes de IA", body, LOGIN_CSS + AJUSTES_CSS, AJUSTES_JS)
+    return _page("Aules · Ajustes", body, LOGIN_CSS + AJUSTES_CSS + APARIENCIA_CSS, AJUSTES_JS + APARIENCIA_JS + PESTANAS_AJUSTES_JS)
 
 
 def render_error(message):
