@@ -1540,13 +1540,26 @@ def _nota_valor(n):
     return f'<div class="nota-valor">{html.escape(nota)}{maximo}</div>'
 
 
+def _a_numero(texto):
+    try:
+        return float(str(texto or "").strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
 def _estado_nota(n):
     estado = n.get("estado") or ""
     if not estado:
         encontrado = re.search(r'<i\b[^>]*\btitle="([^"]+)"', n.get("grade") or "")
         estado = html.unescape(encontrado.group(1)) if encontrado else ""
     if not estado:
-        return ""
+        # Aules solo pone el icono si el profe configuró una nota para aprobar: si no, se aprueba con la mitad.
+        nota, maximo = _a_numero(_texto_nota(n.get("grade")).rstrip(" %")), _a_numero(n.get("max"))
+        if "%" in _texto_nota(n.get("grade")):
+            maximo = 100
+        if nota is None or not maximo:
+            return ""
+        estado = "Aprobado" if nota >= maximo / 2 else "Suspendido"
     clase = "pill-aprobado" if estado.lower().startswith(("aprob", "aprov", "pass")) else "pill-suspendido"
     icono = "check" if clase == "pill-aprobado" else "x"
     return f'<span class="pill {clase}">{icon(icono, 11)}{html.escape(estado)}</span>'
@@ -1731,13 +1744,11 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
     practicas_por_curso = {}
     for pr in practicas or []:
         practicas_por_curso.setdefault(pr["course"], []).append(pr)
-    actividades_practica = {pr["activity"] for pr in practicas or []}
 
     notas_por_curso = {}
     for n in notas:
-        # Las notas de los ejercicios de práctica se ven junto a cada ejercicio, no en "Notas".
-        if n["activity"] not in actividades_practica:
-            notas_por_curso.setdefault(n["course"], []).append(n)
+        # Todas las notas van a "Notas"; las de los ejercicios de práctica se ven además junto a cada ejercicio.
+        notas_por_curso.setdefault(n["course"], []).append(n)
 
     por_curso_material = {}
     for m in materials or []:

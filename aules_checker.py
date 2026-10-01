@@ -27,7 +27,7 @@ LOG_MAX_BYTES = 200_000
 
 EXAM_REMINDER_HOURS = (48, 24, 3)
 TASK_REMINDER_HOURS = (24, 3)
-NEW_BADGE_SECONDS = 3 * 86400
+NEW_BADGE_SECONDS = 24 * 3600
 FORUM_MAX_AGE_SECONDS = 30 * 86400
 MESSAGE_MAX_AGE_SECONDS = 60 * 86400
 # El material cambia poco y es lo que más consultas cuesta: se revisa cada 10 min, no en cada vuelta.
@@ -330,7 +330,7 @@ def apply_submission_status(ctx, module, assignid, item):
     return bool(last.get("submissionsenabled") or last.get("cansubmit") or entregado)
 
 
-ENUNCIADO_MAX_CHARS = 2500
+ENUNCIADO_MAX_CHARS = 20_000
 
 
 def leer_enunciado_de_archivos(ctx, item):
@@ -339,7 +339,11 @@ def leer_enunciado_de_archivos(ctx, item):
         return
     for adjunto in item["attachments"][:2]:
         ruta = os.path.join(ctx.acc_dir, adjunto["path"])
-        texto = ia.extraer_texto(ruta, ENUNCIADO_MAX_CHARS)
+        texto = ia.extraer_texto(ruta, ENUNCIADO_MAX_CHARS + 1)
+        if len(texto) > ENUNCIADO_MAX_CHARS:
+            # Se corta al final de un párrafo, no a mitad de palabra.
+            corte = texto.rfind("\n\n", 0, ENUNCIADO_MAX_CHARS)
+            texto = texto[:corte if corte > 0 else ENUNCIADO_MAX_CHARS].rstrip() + "\n\n[…] El enunciado sigue en el archivo."
         if texto and len(texto) > 40:
             item["summary_file"] = texto
             item["summary_file_name"] = adjunto["filename"]

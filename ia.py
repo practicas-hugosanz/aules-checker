@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import unicodedata
 
 import requests
 
@@ -348,13 +349,90 @@ def probar():
     return texto or "(respuesta vacía)"
 
 
+# Viñetas de Word que en el PDF salen como caracteres de la fuente Symbol/Wingdings (zona privada de Unicode).
+RE_VINETA_PRIVADA = re.compile(r"^[-]\s*")
+RE_INICIO_LISTA = re.compile(r"^(?:[•\-–*]|\d{1,2}[.)]|[a-z][.)])\s")
+FIN_DE_FRASE = ".:;!?)»\"”"
+
+
+def _lineas_pagina(texto):
+    lineas = []
+    for linea in unicodedata.normalize("NFKC", texto or "").split("\n"):
+        linea = RE_VINETA_PRIVADA.sub("• ", linea.strip())
+        lineas.append(re.sub(r"[-]", "", re.sub(r"\s{2,}", " ", linea)))
+    return lineas
+
+
+def _quitar_cabeceras(paginas):
+    """Quita la cabecera y el pie que se repiten en casi todas las páginas (el número de página puede cambiar)."""
+    if len(paginas) < 3:
+        return paginas
+    clave = lambda l: re.sub(r"\d+", "#", l.lower())
+    veces = {}
+    for lineas in paginas:
+        llenas = [l for l in lineas if l]
+        for c in {clave(l) for l in llenas[:3] + llenas[-3:]}:
+            veces[c] = veces.get(c, 0) + 1
+    repetidas = {c for c, n in veces.items() if n >= max(3, len(paginas) * 0.6)}
+    return [[l for l in lineas if not l or clave(l) not in repetidas] for lineas in paginas]
+
+
+def _texto_pagina_pdf(pagina):
+    """Cada modo de pypdf parte palabras en unos PDF ("in iciará" o "To d o s"): se queda el que menos trozos deja."""
+    normal = pagina.extract_text() or ""
+    try:
+        layout = pagina.extract_text(extraction_mode="layout") or ""
+    except Exception:
+        return normal
+    letras = lambda t: len(re.sub(r"\s", "", t))
+    # El modo layout se salta el texto girado: solo vale si no ha perdido letras por el camino.
+    if letras(layout) >= letras(normal) * 0.98 and len(layout.split()) < len(normal.split()):
+        return layout
+    return normal
+
+
+def limpiar_texto_pdf(textos_paginas):
+    """El texto del PDF viene cortado a lo ancho de la página: se recomponen los párrafos y se quita el relleno."""
+    paginas = _quitar_cabeceras([_lineas_pagina(t) for t in textos_paginas])
+    llenas = sorted(len(l) for lineas in paginas for l in lineas if l)
+    ancho = llenas[int(len(llenas) * 0.9)] if llenas else 0
+    parrafos, actual, ultima, hueco = [], "", "", False
+    for lineas in paginas:
+        for linea in lineas + [""]:
+            if not linea:
+                hueco = hueco or bool(actual)
+                continue
+            sigue = (
+                actual and actual[-1] not in FIN_DE_FRASE and not RE_INICIO_LISTA.match(linea)
+                # Tras una línea en blanco solo se une si la frase sigue claramente (minúscula);
+                # sin blanco, también si la línea anterior llegaba casi al margen.
+                and (linea[0].islower() or (not hueco and len(ultima) >= ancho * 0.75))
+            )
+            if sigue:
+                actual = actual[:-1] + linea if actual.endswith("-") and linea[0].islower() else f"{actual} {linea}"
+            else:
+                if actual:
+                    parrafos.append(actual)
+                actual = linea
+            ultima, hueco = linea, False
+    if actual:
+        parrafos.append(actual)
+    # Las líneas cortas seguidas (títulos, datos sueltos) se dejan juntas; los párrafos largos, separados.
+    salida = ""
+    for i, p in enumerate(parrafos):
+        if i:
+            salida += "\n" if len(p) < ancho * 0.75 and len(parrafos[i - 1]) < ancho * 0.75 else "\n\n"
+        salida += p
+    return salida
+
+
 def extraer_texto(ruta, max_chars=MAX_CHARS_ARCHIVO):
     ext = os.path.splitext(ruta)[1].lower()
     try:
         if ext == ".pdf":
             from pypdf import PdfReader
 
-            texto = "\n".join((p.extract_text() or "") for p in PdfReader(ruta).pages)
+            texto = limpiar_texto_pdf(_texto_pagina_pdf(p) for p in PdfReader(ruta).pages)
         elif ext == ".docx":
             import docx
 
@@ -411,10 +489,11 @@ def _contexto_tarea(item, acc_dir, presupuesto=MAX_CHARS_ADJUNTOS):
     if item.get("due_label") and item.get("duedate"):
         partes.append(f"Fecha ({item['due_label']}): se indica en Aules")
     partes.append(f"Descripción del profesor:\n{item.get('summary') or '(sin descripción en Aules)'}")
-    if item.get("summary_file"):
-        partes.append(f"Enunciado dentro del archivo «{item.get('summary_file_name', '')}»:\n{item['summary_file']}")
     rutas = [os.path.join(acc_dir, a["path"]) for a in item.get("attachments", [])]
     bloques = _bloques_archivos(rutas, presupuesto)
+    # El enunciado sacado del archivo es ese mismo adjunto: solo se añade si el adjunto no ha cabido.
+    if item.get("summary_file") and not bloques:
+        partes.append(f"Enunciado dentro del archivo «{item.get('summary_file_name', '')}»:\n{item['summary_file']}")
     if bloques:
         partes.append("Archivos adjuntos del enunciado:\n" + "\n\n".join(bloques))
     return "\n\n".join(partes)
