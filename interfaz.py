@@ -17,6 +17,7 @@ DUE_PREFIXES = {"Abre": "abre ", "Cierra": "cierra "}
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 ICONS = {
+    "more": '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
     "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
     "palette": '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/>',
     "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
@@ -409,11 +410,17 @@ details.notas .notas-link { margin: 4px 12px 8px; }
 .ahora-tareas.ok { background: var(--green-soft); color: var(--green); }
 
 .ia { margin-top: 10px; }
-.ia-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.ia-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--card); color: var(--muted);
-  border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12.5px; cursor: pointer; transition: border-color .15s, color .15s; }
-.ia-btn:hover { border-color: var(--accent); color: var(--accent); }
-.ia-btn[disabled] { opacity: .6; cursor: progress; }
+details.mas { position: relative; flex: none; width: max-content; margin: 8px 0 0 auto; text-align: left; }
+@media (max-width: 680px) { details.mas { margin: 0 0 0 auto; } }
+.mas-btn { width: 30px; height: 30px; box-shadow: none; color: var(--muted); }
+details.mas[open] > .mas-btn { border-color: var(--accent); color: var(--accent); }
+.mas-menu { top: calc(100% + 6px); width: 290px; max-width: calc(100vw - 40px); }
+.mas-menu .menu-item[disabled] { color: var(--muted); cursor: default; background: none; }
+.mas-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.mas-menu .ia-cadena { display: flex; padding: 6px 10px 8px; flex-wrap: wrap; }
+.mas-menu .ia-cadena select { flex: 1 1 100%; max-width: none; }
+/* El menú no puede quedar cortado ni tapado por la siguiente asignatura. */
+.course:has(details.mas[open]) { overflow: visible; position: relative; z-index: 6; }
 .ia-cadena { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); max-width: 100%; }
 .ia-cadena select { font: inherit; font-size: 12.5px; color: var(--text); background: var(--card); border: 1px solid var(--border);
   border-radius: 999px; padding: 3px 8px; max-width: 320px; min-width: 0; text-overflow: ellipsis; }
@@ -520,6 +527,15 @@ REPORT_JS = """
   document.addEventListener('click', function (e) {
     if (account && account.open && !account.contains(e.target)) account.open = false;
   });
+  function cerrarMenus(excepto) {
+    document.querySelectorAll('details.mas[open]').forEach(function (d) { if (d !== excepto) d.open = false; });
+  }
+  document.addEventListener('click', function (e) {
+    var menu = e.target.closest('details.mas');
+    cerrarMenus(menu);
+    if (menu && e.target.closest('.menu-item')) menu.open = false;
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') cerrarMenus(null); });
 
   var refresh = document.getElementById('refresh-form');
   var refreshBtn = refresh && refresh.querySelector('button');
@@ -530,9 +546,10 @@ REPORT_JS = """
   }
   if (refresh) refresh.addEventListener('submit', function () { setTimeout(function () { setLoading(true); }, 0); });
 
-  document.querySelectorAll('.ia').forEach(function (caja) {
+  document.querySelectorAll('.item[data-id]').forEach(function (caja) {
     var id = caja.dataset.id, salida = caja.querySelector('.ia-out');
-    var botones = caja.querySelectorAll('.ia-btn');
+    var botones = caja.querySelectorAll('[data-accion]');
+    if (!salida) return;
     botones.forEach(function (btn) {
       btn.addEventListener('click', async function () {
         var accion = btn.dataset.accion;
@@ -1232,7 +1249,7 @@ def _cadena_html(a, datos, candidatas, cache):
         )
     return (
         f'<label class="ia-cadena" title="Si esta tarea sigue a otra, la IA parte de tu respuesta a aquella: '
-        f'lo que entregaste en Aules o, si no, tu borrador">{icon("link", 13)}<span>Continúa de</span>'
+        f'lo que entregaste en Aules o, si no, tu borrador">{icon("link", 15)}<span>Continúa de</span>'
         f'<select data-anterior>{"".join(opciones)}</select></label>'
     )
 
@@ -1256,14 +1273,34 @@ def _ia_html(a, cache, candidatas=()):
             f'Borrador en {html.escape(borrador.get("carpeta", ""))}</div>'
             f'<div class="ia-texto">{html.escape(", ".join(borrador.get("archivos", [])))}</div>{notas}</div>'
         )
+    return f'<div class="ia-out">{salida}</div>'
+
+
+def _ia_menu(a, cache, candidatas=()):
+    if a["kind"] == "aviso":
+        return ""
+    datos = (cache or {}).get(a["id"], {})
     return (
-        f'<div class="ia" data-id="{html.escape(a["id"])}">'
-        f'<div class="ia-actions">'
-        f'<button class="ia-btn" data-accion="resumen">{icon("sparkles", 13)}Resumen IA</button>'
-        f'<button class="ia-btn" data-accion="borrador">{icon("pencil", 13)}Hacer borrador</button>'
-        f'{_cadena_html(a, datos, candidatas, cache)}'
-        f'</div><div class="ia-out">{salida}</div></div>'
+        _opcion('data-accion="resumen"', "sparkles", "Resumen IA")
+        + _opcion('data-accion="borrador"', "pencil", "Hacer borrador")
+        + _cadena_html(a, datos, candidatas, cache or {})
     )
+
+
+def _opcion(atributos, ic, texto, titulo=""):
+    """Una opción del menú «⋯» de cada tarea."""
+    titulo = f' title="{html.escape(titulo)}"' if titulo else ""
+    return f'<button type="button" class="menu-item" {atributos}{titulo}>{icon(ic, 15)}<span>{texto}</span></button>'
+
+
+def _menu_mas(*grupos):
+    """Botón «⋯» con las opciones de la tarea, separadas por grupos. Vacío si no hay ninguna."""
+    grupos = [g for g in grupos if g]
+    if not grupos:
+        return ""
+    return (f'<details class="mas"><summary class="icon-btn mas-btn" aria-label="Más opciones" title="Más opciones">'
+            f'{icon("more", 18)}</summary><div class="menu mas-menu">'
+            + '<div class="mas-sep" role="separator"></div>'.join(grupos) + "</div></details>")
 
 
 def _material_html(mats):
@@ -1321,7 +1358,6 @@ def _practicas_html(ejercicios, nota_de_actividad, now_ts):
 
 PROPIAS_CSS = """
 .pill-propia { background: var(--accent-soft); color: var(--accent); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
-.propia-acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .course-titulo { flex: 1; min-width: 0; }
 .anadir-curso { flex: none; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--card);
   color: var(--muted); border-radius: 999px; padding: 5px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
@@ -1537,7 +1573,7 @@ def _dias_sin_clase_html(no_lectivos):
     return f'<section class="sin-clase-lista"><h2>{icon("calendar", 16)}Próximos días sin clase</h2>{filas}</section>'
 
 
-def _due_html(ts, label, now_ts, cls="due"):
+def _due_html(ts, label, now_ts, cls="due", extra=""):
     prefix = DUE_PREFIXES.get(label, "")
     abs_text = format_due(ts)
     if ts and label in ("Abre", "Cierra", "Prórroga"):
@@ -1545,7 +1581,7 @@ def _due_html(ts, label, now_ts, cls="due"):
     return (
         f'<div class="{cls}" data-due="{ts or 0}" data-prefix="{prefix}">'
         f'<span class="due-rel">{prefix}{rel_time(ts, now_ts)}</span>'
-        f'<span class="due-abs">{icon("clock", 12)}{abs_text}</span></div>'
+        f'<span class="due-abs">{icon("clock", 12)}{abs_text}</span>{extra}</div>'
     )
 
 
@@ -1586,12 +1622,7 @@ def _estado_nota(n):
 
 
 ENTREGA_CSS = """
-.entrega-acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.boton-entregar { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--accent); background: var(--accent-soft);
-  color: var(--accent-ink); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; }
-.boton-entregar:hover { background: var(--accent); color: var(--on-accent); }
 .ent-limites { margin: -6px 0 0; font-size: 12.5px; color: var(--muted); }
-.ent-cerrada { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); }
 .ent-aviso { display: flex; gap: 8px; align-items: flex-start; background: var(--amber-soft); color: var(--amber); border-radius: 10px;
   padding: 8px 12px; font-size: 13px; }
 .ent-aviso .i { flex: none; margin-top: 2px; }
@@ -1647,6 +1678,7 @@ ENTREGA_JS = """
   // Resumen de lo que se va a enviar, siempre a la vista antes de pulsar «Entregar».
   function resumen() {
     confirmar = false;
+    if (!datos) { el('ent-enviar').disabled = true; return; }
     el('ent-enviar').lastChild.textContent = 'Entregar en Aules';
     var nombres = elegidos.map(function (f) { return f.name; }).concat(borradorMarcados());
     var texto = form.texto && form.texto.value.trim();
@@ -1659,7 +1691,8 @@ ENTREGA_JS = """
   }
 
   async function abrir(id) {
-    error(''); el('ent-ok').hidden = true; form.hidden = false; elegidos = []; datos = null;
+    error(''); el('ent-ok').hidden = true; form.hidden = false; elegidos = []; datos = null; confirmar = false;
+    el('ent-enviar').disabled = true; el('ent-enviar').lastChild.textContent = 'Entregar en Aules';
     el('ent-titulo').textContent = 'Entregar tarea';
     el('ent-cuerpo').hidden = true; el('ent-cargando').hidden = false;
     dlg.showModal();
@@ -1786,12 +1819,10 @@ def _entrega_html(a, now_ts):
         return ""
     entrega = a["entrega"]
     if entrega.get("desde") and now_ts < entrega["desde"]:
-        return f'<div class="entrega-acciones"><span class="ent-cerrada">{icon("clock", 13)}Se podrá entregar desde el {format_due(entrega["desde"])}</span></div>'
+        return _opcion("disabled", "clock", f'Se podrá entregar desde el {format_due(entrega["desde"])}')
     if entrega.get("corte") and now_ts > entrega["corte"] and a.get("due_label") != "Prórroga":
-        return "" if a["done"] else f'<div class="entrega-acciones"><span class="ent-cerrada">{icon("lock", 13)}Plazo de entrega cerrado</span></div>'
-    texto = "Cambiar la entrega" if a["done"] else "Entregar"
-    return (f'<div class="entrega-acciones"><button type="button" class="boton-entregar" data-entregar="{html.escape(a["id"])}">'
-            f'{icon("upload", 13)}{texto}</button></div>')
+        return "" if a["done"] else _opcion("disabled", "lock", "Plazo de entrega cerrado")
+    return _opcion(f'data-entregar="{html.escape(a["id"])}"', "upload", "Cambiar la entrega" if a["done"] else "Entregar")
 
 
 def _num(valor):
@@ -1824,17 +1855,15 @@ def _marcas_html(a):
     ident = html.escape(a["id"])
     if a.get("marcada"):
         texto = "Volver a pendiente" if a["marcada"] == "hecha" else "Sí es una tarea"
-        botones = f'<button type="button" class="ia-btn" data-marca="" data-item="{ident}">{icon("refresh", 13)}{texto}</button>'
-    elif a["kind"] != "aviso" and not a["done"]:
-        botones = (
-            f'<button type="button" class="ia-btn" data-marca="hecha" data-item="{ident}" '
-            f'title="La entregaste en clase o fuera de Aules: deja de estar pendiente y no te avisa más">{icon("check", 13)}Ya está hecha</button>'
-            f'<button type="button" class="ia-btn" data-marca="aviso" data-item="{ident}" '
-            f'title="El profe la puso como tarea pero es un aviso: pasa a «Avisos sin entrega» y no te avisa más">{icon("megaphone", 13)}No es una tarea</button>'
+        return _opcion(f'data-marca="" data-item="{ident}"', "refresh", texto)
+    if a["kind"] != "aviso" and not a["done"]:
+        return (
+            _opcion(f'data-marca="hecha" data-item="{ident}"', "check", "Ya está hecha",
+                    "La entregaste en clase o fuera de Aules: deja de estar pendiente y no te avisa más")
+            + _opcion(f'data-marca="aviso" data-item="{ident}"', "megaphone", "No es una tarea",
+                      "El profe la puso como tarea pero es un aviso: pasa a «Avisos sin entrega» y no te avisa más")
         )
-    else:
-        return ""
-    return f'<div class="propia-acciones marca-acciones">{botones}</div>'
+    return ""
 
 
 def _nota_html(n, now_ts, con_nombre=True):
@@ -1943,27 +1972,26 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
         classes = f'item kind-{kind} urg-{urgency(a)}' + (" is-done" if a["done"] else "")
         candidatas = [c for c in by_course.get(a["course"], []) if c["id"] != a["id"] and c["kind"] != "aviso"
                       and c["id"].split("_")[0] in ("assign", "assigngva")]
-        extra_attr, extra = "", _ia_html(a, ia_cache, candidatas)
+        extra_attr = ""
         if a.get("propia"):
             if a["summary"]:
                 desc = _desc_html(a["summary"], "Ver notas")
             datos = {k: a[k] for k in ("id", "name", "course", "kind", "fecha", "hora", "hora_auto")} | {"notes": a["summary"]}
             extra_attr = f' data-propia="{html.escape(json.dumps(datos, ensure_ascii=False))}"'
             hecha = ("0", "refresh", "Volver a pendiente") if a["done"] else ("1", "check", "Marcar como hecha")
-            extra = (
-                '<div class="propia-acciones">'
-                f'<button type="button" class="ia-btn" data-hecha="{html.escape(a["id"])}" data-valor="{hecha[0]}">{icon(hecha[1], 13)}{hecha[2]}</button>'
-                f'<button type="button" class="ia-btn" data-editar>{icon("pencil", 13)}Editar</button>'
-                "</div>"
-            )
+            extra = ""
+            menu = _menu_mas(_opcion(f'data-hecha="{html.escape(a["id"])}" data-valor="{hecha[0]}"', hecha[1], hecha[2])
+                             + _opcion("data-editar", "pencil", "Editar"))
         else:
-            extra = _entrega_html(a, now_ts) + extra + _marcas_html(a)
+            extra = _ia_html(a, ia_cache, candidatas)
+            menu = _menu_mas(_entrega_html(a, now_ts), _ia_menu(a, ia_cache, candidatas), _marcas_html(a))
         return (
-            f'<article class="{classes}" data-kind="{kind}" data-new="{int(bool(a.get("is_new")))}" data-search="{search}"{extra_attr}>'
+            f'<article class="{classes}" data-kind="{kind}" data-new="{int(bool(a.get("is_new")))}" data-search="{search}"'
+            f' data-id="{html.escape(a["id"])}"{extra_attr}>'
             f'<div class="item-main"><div class="item-head">{pills}</div>'
             f'<h3 class="item-title">{html.escape(a["name"])}</h3>'
             f'{cambios}{desc}{_files_html(a["attachments"])}{nota_item}{extra}</div>'
-            f'{_due_html(a["duedate"], a["due_label"], now_ts)}'
+            f'{_due_html(a["duedate"], a["due_label"], now_ts, extra=menu)}'
             "</article>"
         )
 

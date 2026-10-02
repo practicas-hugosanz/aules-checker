@@ -1119,6 +1119,10 @@ def entregar(session, item, archivos, texto="", acepta_declaracion=False):
         raise EntregaError("Esta tarea no admite archivos, solo texto.")
     if texto and not config["texto"]:
         raise EntregaError("Esta tarea no admite texto, solo archivos.")
+    nombres = [nombre.lower() for nombre, _ in archivos]
+    repetido = next((n for n in nombres if nombres.count(n) > 1), None)
+    if repetido:
+        raise EntregaError(f"Hay dos archivos que se llaman «{repetido}». Quita uno o cámbiale el nombre.")
     if len(archivos) > config["max_archivos"]:
         raise EntregaError(f"Esta tarea admite como mucho {config['max_archivos']} archivo(s).")
     for nombre, datos in archivos:
@@ -1897,8 +1901,11 @@ def describir_cambios(antes, ahora):
     return cambios
 
 
-def mark_changed_items(state, items, now_ts):
-    """Compara cada tarea con cómo era en la comprobación anterior. Devuelve las que el profe ha cambiado."""
+def mark_changed_items(state, items, now_ts, marcadas=()):
+    """Compara cada tarea con cómo era en la comprobación anterior. Devuelve las que el profe ha cambiado.
+
+    Las que marcaste como aviso o como hecha no avisan: ya dijiste que no te importan o que están hechas.
+    """
     firmas = state.setdefault("items_firma", {})
     recientes = state.setdefault("items_cambios", {})
     cambiadas = []
@@ -1906,7 +1913,7 @@ def mark_changed_items(state, items, now_ts):
         ahora, antes = _firma_item(a), firmas.get(a["id"])
         firmas[a["id"]] = ahora
         # La primera vez que se ve una tarea (o tras actualizar a esta versión) solo se guarda cómo es.
-        if antes is None or a["kind"] == "aviso" or a["done"]:
+        if antes is None or a["kind"] == "aviso" or a["done"] or a["id"] in marcadas:
             continue
         cambios = describir_cambios(antes, ahora)
         if cambios:
@@ -1916,8 +1923,21 @@ def mark_changed_items(state, items, now_ts):
     for clave in [c for c, v in recientes.items() if now_ts - v["ts"] > NEW_BADGE_SECONDS]:
         del recientes[clave]
     for a in items:
-        a["cambios"] = [] if a["done"] else recientes.get(a["id"], {}).get("cambios", [])
+        a["cambios"] = [] if a["done"] or a["id"] in marcadas else recientes.get(a["id"], {}).get("cambios", [])
     return cambiadas
+
+
+def olvidar_resumenes(acc_dir, cambiadas):
+    """Borra el resumen de IA de las tareas cuyo enunciado ha cambiado: así no se muestra uno que ya no es cierto."""
+    afectadas = [a["id"] for a in cambiadas if any(not c.startswith(("La fecha", "Ya no tiene fecha", "Ahora tiene fecha", "Tienes prórroga"))
+                                                    for c in a["cambios"])]
+    if not afectadas:
+        return
+    cache = ia.cargar_cache(acc_dir)
+    borradas = [i for i in afectadas if cache.get(i, {}).pop("resumen", None) is not None]
+    if borradas:
+        ia.guardar_cache(acc_dir, cache)
+        log(f"Resumen de IA descartado porque cambió la tarea: {', '.join(borradas)}")
 
 
 def mark_new_posts(state, posts, now_ts, first_sync, userid):
@@ -2164,7 +2184,8 @@ def run_check(session):
                 write_atomic(os.path.join(acc_dir, "profesores.json"), json.dumps(profesores, ensure_ascii=False, indent=2))
 
     new_items = mark_new_items(state, items, now_ts, first_sync)
-    changed_items = mark_changed_items(state, items, now_ts)
+    changed_items = mark_changed_items(state, items, now_ts, set(cargar_marcas(acc_dir)))
+    olvidar_resumenes(acc_dir, changed_items)
     new_posts = mark_new_posts(state, posts, now_ts, first_sync, ctx.userid) if posts is not None else []
     new_materials = mark_new_materials(state, materiales, now_ts, first_sync) if materiales is not None else []
     new_practices = mark_new_materials(state, practicas, now_ts, first_sync, "practicas") if practicas is not None else []

@@ -513,6 +513,15 @@ def vigilar_codigo():
 def comprobar_periodicamente():
     """Revisa Aules cada minuto y medio mientras la app está abierta."""
     ultimo_error = None
+    # La pantalla principal se guarda ya hecha: tras actualizar o reiniciar se rehace al momento con el código
+    # nuevo y lo último guardado, sin esperar a que responda Aules.
+    session = core.load_session()
+    if session:
+        try:
+            with check_lock:
+                core.escribir_informe(session)
+        except Exception as e:
+            core.log(f"No se pudo rehacer la pantalla principal al arrancar: {e}")
     time.sleep(10)
     while True:
         session = core.load_session()

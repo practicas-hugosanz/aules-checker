@@ -1,17 +1,19 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "cambios": [
-    "Aviso cuando un profe cambia una tarea (fecha, prórroga, descripción o archivos), y la tarea sale como «Modificada» durante 24 horas con la lista de cambios",
-    "Entregar las tareas desde la app: eliges archivos (o los de tu borrador con IA), ves un resumen y confirmas. Avisa si sustituye una entrega anterior y te dice cuándo se abre o si el plazo está cerrado",
-    "«¿Cuánto llevo?» en cada asignatura: tu media en lo corregido y lo que te falta para el 5, solo cuando los pesos de las notas son fiables"
+    "Las opciones de cada tarea (Entregar, Resumen IA, Hacer borrador, Ya está hecha…) están ahora en un botón «⋯» debajo de la fecha, para que ocupen menos",
+    "Las tareas que marcaste como «No es una tarea» o «Ya está hecha» ya no avisan cuando el profe las cambia",
+    "Si el profe cambia el enunciado o los archivos de una tarea, se descarta su resumen de IA para que no veas uno desfasado",
+    "Al entregar, avisa si eliges dos archivos con el mismo nombre",
+    "La pantalla principal se actualiza al momento tras una actualización, sin esperar a Aules"
   ],
   "archivos": {
-    "aules_checker.py": "9657339719543ff40c8ccf8541028daae4fb96d0d101b56d7f2314e4bec80c83",
-    "servidor.py": "727cb23e1ed285b548493f6b2a961fad80e9082b202e6f5203ef2a33642faba2",
-    "interfaz.py": "529443c774c92bf2d6089cd343d0a7583f1c1085bdf8709a2cd6372d0d98436d",
+    "aules_checker.py": "39ccd670cf0b323ff46f45c824563e4e9b2c324decca77c65925042321b7d7f0",
+    "servidor.py": "43794eb4854872640f51aa30344a3ce87ffc3e841fe4c2e65a4288f7df5a0a33",
+    "interfaz.py": "bd470575bc80686ae44b690a512c3311186e5e79cdd0ab8ca16617ae31b10e1a",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
     "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
-    "actualizador.py": "cad6298c7b3782adf9b0ace5a685ade3a4c3bce1f31b8355c8c26dd695b7d26f",
+    "actualizador.py": "3aa028f8b76398c3877161c0b5f9c13f7dbc78af12841ddfba5e21ef6c31c46a",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }

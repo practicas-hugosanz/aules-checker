@@ -220,6 +220,27 @@ class TareasModificadas(unittest.TestCase):
         self.assertEqual(self.comprobar(estado, self.tarea(summary="  Haz   la práctica. "))[0], [])
         self.assertEqual(self.comprobar(estado, self.tarea(done=True, duedate=1))[0], [])
 
+    def test_las_tareas_que_marcaste_no_avisan(self):
+        estado = {}
+        core.mark_changed_items(estado, [self.tarea()], 1_000_000, marcadas={"assign_1"})
+        items = [self.tarea(duedate=1)]
+        self.assertEqual(core.mark_changed_items(estado, items, 1_000_100, marcadas={"assign_1"}), [])
+        self.assertEqual(items[0]["cambios"], [])
+
+    def test_si_cambia_el_enunciado_se_olvida_el_resumen_de_ia(self):
+        carpeta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, carpeta, True)
+        ia.guardar_cache(carpeta, {"assign_1": {"resumen": "viejo", "borrador": {"archivos": ["a.md"]}},
+                                   "assign_2": {"resumen": "sigue valiendo"}})
+        cambiadas = [dict(self.tarea(), cambios=["El profe ha cambiado la descripción"]),
+                     dict(self.tarea(id="assign_2"), cambios=["La fecha se retrasa: del lun al mar"])]
+        with mock.patch.object(core, "log"):
+            core.olvidar_resumenes(carpeta, cambiadas)
+        cache = ia.cargar_cache(carpeta)
+        self.assertNotIn("resumen", cache["assign_1"])
+        self.assertIn("borrador", cache["assign_1"])
+        self.assertEqual(cache["assign_2"]["resumen"], "sigue valiendo")
+
     def test_el_aviso_dura_24_horas(self):
         estado = {}
         self.comprobar(estado, self.tarea(), ahora=1_000_000)
@@ -283,7 +304,8 @@ class EntregarDesdeLaApp(unittest.TestCase):
         self.assertEqual((items[0]["done"], items[0]["status"]), (True, "Entregada"))
 
     def test_comprueba_los_limites_antes_de_subir_nada(self):
-        casos = [([], "al menos un archivo"), ([("a.sql", b"1")] * 3, "como mucho 2"),
+        casos = [([], "al menos un archivo"), ([("a.sql", b"1"), ("A.sql", b"2")], "dos archivos que se llaman"),
+                 ([("a.sql", b"1"), ("b.sql", b"1"), ("c.sql", b"1")], "como mucho 2"),
                  ([("grande.sql", b"x" * 2000)], "máximo"), ([("foto.png", b"1")], "tipo permitido")]
         for archivos, mensaje in casos:
             self.llamadas.clear()
