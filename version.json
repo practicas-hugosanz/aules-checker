@@ -1,18 +1,18 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "cambios": [
-    "Temas en Ajustes > Apariencia: Clásico, Suizo, Brutalista, Terminal, Cuaderno, Cristal y Retro 95. Cada uno cambia colores, letra, formas y la colocación de algunas cosas",
-    "Modo claro, oscuro o automático en los temas que lo admiten",
-    "Ajustes separado en dos pestañas: Apariencia e Inteligencia artificial",
-    "Tu foto de perfil de Aules sale en la app en lugar de tus iniciales"
+    "Las actualizaciones se prueban antes de instalarse: si la versión nueva no arranca en tu ordenador, no se instala y tu app sigue igual",
+    "Si una actualización falla al reiniciar, la app vuelve sola a la versión anterior",
+    "Más rápida: los enunciados en PDF ya no se releen en cada comprobación",
+    "Los títulos numerados de los PDF (Ejercicio 5, Ejercicio 6…) ya no se borran por confundirlos con la cabecera"
   ],
   "archivos": {
     "aules_checker.py": "eaeac4c4c0b52fe126b59e9a61a6a846f7bf2ffc94581b2b92326c4939c2aa9e",
-    "servidor.py": "a282f27170ae3e024277e06b12317f6e26d08a1dbe105eb89ddcbad6afa0a6b2",
+    "servidor.py": "d902683a87180943b29603c4a3ae977feeb6a3a08e65090905dfbe66b53782da",
     "interfaz.py": "b23a82991aa29262e0d5511e9a00ded964b33585112bbcbe003abf6290df291b",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
-    "ia.py": "5d7e901908978ac3c1531c04fa464f5a52798287aebcc819d15fa975923d7a97",
-    "actualizador.py": "fed4015f4af3979d0da18269592f11a176474b62b9930592cc5b2d37f43d2399",
+    "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
+    "actualizador.py": "d4ceb55c7f90968cb5213e366ef6c1c3ec769b857501d4f327ed4634a3c43c9d",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }

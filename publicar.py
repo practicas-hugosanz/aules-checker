@@ -2,6 +2,7 @@
 
 Uso:   python publicar.py 1.1.0 "Qué ha cambiado" "Otro cambio"
 
+Antes de nada pasa las pruebas (pruebas.py) y comprueba que la app arranca: si algo falla, no sube nada.
 Sube el código a la rama main con su etiqueta (v1.1.0), un version.json con la huella de cada archivo y el
 instalador regenerado. Solo se sube el código: el .gitignore deja fuera cuentas/, session.json, ajustes.json...
 """
@@ -15,7 +16,7 @@ import crear_instalador
 
 BASE_DIR = actualizador.BASE_DIR
 PERMITIDOS = set(actualizador.ARCHIVOS) | {
-    "version.json", "crear_instalador.py", "publicar.py", ".gitignore", ".gitattributes", "README.md",
+    "version.json", "crear_instalador.py", "publicar.py", "pruebas.py", ".gitignore", ".gitattributes", "README.md",
     "para_compartir/Instalar Aules.bat",
 }
 
@@ -25,6 +26,18 @@ def git(*args, comprobar=True):
     if comprobar and r.returncode != 0:
         sys.exit(f"Falló «git {' '.join(args)}»:\n{(r.stderr or r.stdout).strip()}")
     return r.stdout.strip()
+
+
+def comprobar_antes_de_publicar():
+    """Una versión rota dejaría a todos sin app: no se publica nada si fallan las pruebas o el arranque."""
+    print("Pasando las pruebas...")
+    r = subprocess.run([sys.executable, "-m", "unittest", "-q", "pruebas"], cwd=BASE_DIR, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        sys.exit(f"Fallan las pruebas, no se ha publicado nada:\n{(r.stderr or r.stdout).strip()}")
+    error = actualizador.probar_codigo(BASE_DIR)
+    if error:
+        sys.exit(f"La app no arranca, no se ha publicado nada:\n{error}")
 
 
 def main():
@@ -41,6 +54,7 @@ def main():
         sys.exit(f"Falta conectar con GitHub:  git remote add origin https://github.com/{actualizador.REPO}.git")
     if git("tag", "--list", f"v{version}"):
         sys.exit(f"La versión {version} ya está publicada: usa un número mayor.")
+    comprobar_antes_de_publicar()
 
     # Los commits se firman con la dirección privada de GitHub, no con tu correo real.
     usuario = actualizador.REPO.split("/")[0]

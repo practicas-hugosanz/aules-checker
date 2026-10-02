@@ -367,13 +367,28 @@ def _quitar_cabeceras(paginas):
     """Quita la cabecera y el pie que se repiten en casi todas las páginas (el número de página puede cambiar)."""
     if len(paginas) < 3:
         return paginas
+
     clave = lambda l: re.sub(r"\d+", "#", l.lower())
-    veces = {}
-    for lineas in paginas:
+    apariciones = {}
+    for numero, lineas in enumerate(paginas, 1):
         llenas = [l for l in lineas if l]
-        for c in {clave(l) for l in llenas[:3] + llenas[-3:]}:
-            veces[c] = veces.get(c, 0) + 1
-    repetidas = {c for c, n in veces.items() if n >= max(3, len(paginas) * 0.6)}
+        for l in llenas[:3] + llenas[-3:]:
+            apariciones.setdefault(clave(l), {}).setdefault(numero, l)
+
+    def es_cabecera(por_pagina):
+        if len(por_pagina) < max(3, len(paginas) * 0.6):
+            return False
+        # Lo único que puede cambiar es el número de página: avanza a la vez que la página (con hasta dos de
+        # desfase por la portada). Así "Ejercicio 5", "Ejercicio 6"… al principio de cada página no se borran.
+        numeros = [(n, [int(x) for x in re.findall(r"\d+", l)]) for n, l in por_pagina.items()]
+        for i in range(len(numeros[0][1])):
+            valores = {nums[i] for _, nums in numeros}
+            desfases = {nums[i] - n for n, nums in numeros}
+            if len(valores) > 1 and (len(desfases) > 1 or abs(desfases.pop()) > 2):
+                return False
+        return True
+
+    repetidas = {c for c, por_pagina in apariciones.items() if es_cabecera(por_pagina)}
     return [[l for l in lineas if not l or clave(l) not in repetidas] for lineas in paginas]
 
 
@@ -426,7 +441,30 @@ def limpiar_texto_pdf(textos_paginas):
     return salida
 
 
+# Texto ya extraído de cada archivo. La app relee los mismos enunciados cada minuto y medio, y sacar el texto
+# de un PDF cuesta casi un segundo: solo se vuelve a leer si el archivo cambia (fecha o tamaño).
+_TEXTOS = {}
+_TEXTOS_MAX = 40
+
+
 def extraer_texto(ruta, max_chars=MAX_CHARS_ARCHIVO):
+    try:
+        info = os.stat(ruta)
+        clave = (os.path.abspath(ruta), info.st_mtime_ns, info.st_size)
+    except OSError:
+        clave = None
+    texto = _TEXTOS.get(clave) if clave else None
+    if texto is None:
+        texto, se_pudo_leer = _leer_texto(ruta)
+        if clave and se_pudo_leer:
+            if len(_TEXTOS) >= _TEXTOS_MAX:
+                _TEXTOS.pop(next(iter(_TEXTOS)))
+            _TEXTOS[clave] = texto
+    return texto[:max_chars]
+
+
+def _leer_texto(ruta):
+    """Todo el texto del archivo, y si se ha podido leer (un error no se guarda, para reintentarlo)."""
     ext = os.path.splitext(ruta)[1].lower()
     try:
         if ext == ".pdf":
@@ -450,11 +488,10 @@ def extraer_texto(ruta, max_chars=MAX_CHARS_ARCHIVO):
             with open(ruta, "r", encoding="utf-8", errors="replace") as f:
                 texto = f.read()
         else:
-            return ""
+            return "", True
     except Exception as e:
-        return f"(No se pudo leer {os.path.basename(ruta)}: {e})"
-    texto = re.sub(r"\n{3,}", "\n\n", texto).strip()
-    return texto[:max_chars]
+        return f"(No se pudo leer {os.path.basename(ruta)}: {e})", False
+    return re.sub(r"\n{3,}", "\n\n", texto).strip(), True
 
 
 def _bloques_archivos(rutas, presupuesto):

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ import time
 
 import requests
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 # Usuario y repositorio de GitHub de donde salen las versiones nuevas.
 REPO = "practicas-hugosanz/aules-checker"
 RAMA = "main"
@@ -26,6 +27,25 @@ ARCHIVOS = ("aules_checker.py", "servidor.py", "interfaz.py", "temas.py", "ia.py
 NOMBRE_VALIDO = re.compile(r"^[a-z_]+\.(py|txt)$")
 HUELLA_VALIDA = re.compile(r"^[0-9a-f]{64}$")
 COMPROBAR_CADA_SEGUNDOS = 6 * 3600
+# Copia de la versión anterior, para volver a ella si la nueva no arranca.
+CARPETA_ANTERIOR = os.path.join(BASE_DIR, "anterior")
+CARPETA_PRUEBA = os.path.join(BASE_DIR, ".actualizacion")
+
+# Se ejecuta en otro proceso dentro de la carpeta a probar: carga todo el código y genera las pantallas
+# principales sin abrir el servidor ni conectarse a Aules.
+PRUEBA_ARRANQUE = r"""
+import os, sys
+sys.path.insert(0, os.getcwd())
+import actualizador, aules_checker, ia, interfaz, servidor, temas
+sesion = {"username": "prueba", "fullname": "Ana Prueba", "firstname": "Ana"}
+ajustes = {"proveedor": "anthropic", "modelo": "", "api_key": "", "base_url": ""}
+paginas = [interfaz.build_report([], [], sesion, [], 48), interfaz.render_login(), interfaz.render_error("prueba"),
+           interfaz.render_ajustes(ajustes, ia.PROVEEDORES), interfaz.render_horario([]), interfaz.render_profesores({})]
+for clave in temas.TEMAS:
+    for pagina in paginas:
+        assert "data-estilo" in temas.con_tema(pagina, dict(ajustes, estilo=clave))
+print("ok")
+"""
 
 _nueva = None
 _instalando = threading.Lock()
@@ -78,13 +98,46 @@ def estado():
     }
 
 
-def _pip(requisitos):
+def _python_con_consola():
     python = sys.executable
-    # pythonw no tiene consola; para pip vale igual el python.exe de al lado.
+    # pythonw no tiene consola; para pip y las pruebas vale igual el python.exe de al lado.
     if python.lower().endswith("pythonw.exe") and os.path.exists(python[:-5] + ".exe"):
         python = python[:-5] + ".exe"
+    return python
+
+
+def probar_codigo(carpeta):
+    """Comprueba que el código de esa carpeta arranca. Devuelve "" si va bien o el error si no."""
+    try:
+        r = subprocess.run(
+            [_python_con_consola(), "-c", PRUEBA_ARRANQUE], cwd=carpeta, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"No se pudo hacer la prueba de arranque: {e}"
+    if r.returncode == 0 and r.stdout.strip().endswith("ok"):
+        return ""
+    lineas = (r.stderr or r.stdout).strip().splitlines()
+    return " | ".join(lineas[-3:]) or f"La prueba de arranque terminó con el código {r.returncode}"
+
+
+def restaurar_anterior(log=print):
+    """Vuelve a la versión guardada antes de la última actualización. True si había copia y se ha restaurado."""
+    if es_copia_de_desarrollo() or not os.path.isdir(CARPETA_ANTERIOR):
+        return False
+    for nombre in os.listdir(CARPETA_ANTERIOR):
+        if NOMBRE_VALIDO.match(nombre):
+            shutil.copy2(os.path.join(CARPETA_ANTERIOR, nombre), os.path.join(BASE_DIR, nombre + ".nuevo"))
+            os.replace(os.path.join(BASE_DIR, nombre + ".nuevo"), os.path.join(BASE_DIR, nombre))
+    shutil.rmtree(CARPETA_ANTERIOR, ignore_errors=True)
+    log("La versión nueva no arrancaba: se ha vuelto a la anterior")
+    return True
+
+
+def _pip(requisitos):
     r = subprocess.run(
-        [python, "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", requisitos],
+        [_python_con_consola(), "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", requisitos],
         capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if r.returncode != 0:
@@ -127,6 +180,30 @@ def instalar(log=print):
                     _pip(temporal)
                 finally:
                     os.remove(temporal)
+
+        # Antes de tocar nada, la versión nueva se prueba en una carpeta aparte con el resto del código actual.
+        shutil.rmtree(CARPETA_PRUEBA, ignore_errors=True)
+        os.makedirs(CARPETA_PRUEBA)
+        try:
+            for nombre in ARCHIVOS:
+                if os.path.exists(os.path.join(BASE_DIR, nombre)):
+                    shutil.copy2(os.path.join(BASE_DIR, nombre), CARPETA_PRUEBA)
+            for nombre, datos in descargados.items():
+                with open(os.path.join(CARPETA_PRUEBA, nombre), "wb") as f:
+                    f.write(datos)
+            error = probar_codigo(CARPETA_PRUEBA)
+        finally:
+            shutil.rmtree(CARPETA_PRUEBA, ignore_errors=True)
+        if error:
+            log(f"La versión {info['version']} no pasó la prueba de arranque: {error}")
+            raise ActualizacionError("La versión nueva no arranca en este ordenador, así que no se ha instalado. Tu app sigue igual.")
+
+        # Copia de lo que hay ahora, por si la nueva falla al reiniciar.
+        shutil.rmtree(CARPETA_ANTERIOR, ignore_errors=True)
+        os.makedirs(CARPETA_ANTERIOR)
+        for nombre in set(ARCHIVOS) | set(descargados):
+            if os.path.exists(os.path.join(BASE_DIR, nombre)):
+                shutil.copy2(os.path.join(BASE_DIR, nombre), CARPETA_ANTERIOR)
 
         # Se escriben todos aparte y luego se cambian de golpe, servidor.py el último: al verlo cambiar, la app se reinicia.
         orden = sorted(descargados, key=lambda n: n == "servidor.py")

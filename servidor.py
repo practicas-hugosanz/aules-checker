@@ -438,8 +438,14 @@ def vigilar_codigo():
             continue
         if check_lock.locked() or ia_lock.locked():
             continue
-        core.log("Código actualizado: reiniciando la app")
         time.sleep(1)
+        # Si el código nuevo no arranca, reiniciar dejaría la app cerrada y sin forma de actualizarla desde dentro.
+        error = actualizador.probar_codigo(core.BASE_DIR)
+        if error and not actualizador.restaurar_anterior(core.log):
+            core.log(f"El código nuevo no arranca, la app sigue con el que tenía cargado: {error}")
+            inicial = _firma_codigo()
+            continue
+        core.log("Código actualizado: reiniciando la app")
         os.execv(sys.executable, [sys.executable, os.path.join(core.BASE_DIR, "servidor.py")])
 
 
