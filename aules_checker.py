@@ -16,7 +16,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import ia
-from interfaz import asignatura_a_curso, build_report, format_due
+from interfaz import PORTALES, asignatura_a_curso, build_report, format_due, portal_de
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASE_URL = "https://aules.edu.gva.es/fp"
@@ -81,12 +81,23 @@ def sanitize(name):
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip().rstrip(".") or "sin_nombre"
 
 
-def account_dir(username):
-    return os.path.join(ACCOUNTS_DIR, sanitize(username.lower()))
+def account_dir(cuenta):
+    return os.path.join(ACCOUNTS_DIR, sanitize(cuenta.lower()))
+
+
+def clave_cuenta(username, base_url):
+    """Nombre de la carpeta de una cuenta. Las de FP siguen como siempre (solo el usuario); las de otras etapas
+    llevan la etapa detrás, porque el mismo usuario puede tener cuenta en dos Aules distintos."""
+    portal = portal_de(base_url)
+    return username if portal == "fp" else f"{username}@{portal}"
+
+
+def carpeta(session):
+    return account_dir(clave_cuenta(session["username"], session.get("base_url")))
 
 
 def report_path(session):
-    return os.path.join(account_dir(session["username"]), "informe.html")
+    return os.path.join(carpeta(session), "informe.html")
 
 
 def load_session():
@@ -132,33 +143,33 @@ def _dpapi(datos, cifrar):
         kernel32.LocalFree(ctypes.cast(salida.pbData, ctypes.c_void_p))
 
 
-def _ruta_credencial(username):
-    return os.path.join(account_dir(username), "credencial.bin")
+def _ruta_credencial(session):
+    return os.path.join(carpeta(session), "credencial.bin")
 
 
-def guardar_contrasena(username, password):
-    os.makedirs(account_dir(username), exist_ok=True)
-    write_atomic(_ruta_credencial(username), _dpapi(password.encode("utf-8"), cifrar=True))
+def guardar_contrasena(session, password):
+    os.makedirs(carpeta(session), exist_ok=True)
+    write_atomic(_ruta_credencial(session), _dpapi(password.encode("utf-8"), cifrar=True))
 
 
-def leer_contrasena(username):
+def leer_contrasena(session):
     try:
-        with open(_ruta_credencial(username), "rb") as f:
+        with open(_ruta_credencial(session), "rb") as f:
             return _dpapi(f.read(), cifrar=False).decode("utf-8")
     except (OSError, ValueError):
         return None
 
 
-def borrar_contrasena(username):
+def borrar_contrasena(session):
     try:
-        os.remove(_ruta_credencial(username))
+        os.remove(_ruta_credencial(session))
     except OSError:
         pass
 
 
 def sesion_caducada(session):
     """Aules invalidó el token: vuelve a entrar con la contraseña guardada o, si no hay, cierra la sesión."""
-    password = leer_contrasena(session["username"])
+    password = leer_contrasena(session)
     if password:
         try:
             nueva = login(session["username"], password, session.get("base_url") or DEFAULT_BASE_URL)
@@ -166,7 +177,7 @@ def sesion_caducada(session):
             return nueva
         except LoginError:
             # La contraseña cambió en Aules: la guardada ya no sirve.
-            borrar_contrasena(session["username"])
+            borrar_contrasena(session)
     log("La sesión de Aules ha caducado")
     clear_session()
     toast("Sesión de Aules caducada", "Abre Aules e inicia sesión de nuevo")
@@ -216,6 +227,8 @@ def call_ws(base_url, token, wsfunction, params=None):
 
 
 def login(username, password, base_url=DEFAULT_BASE_URL):
+    if base_url not in {url for _, url in PORTALES.values()}:
+        raise LoginError("Elige una etapa de la lista.")
     username = username.strip()
     if not username or not password:
         raise LoginError("Introduce tu usuario y contraseña.")
@@ -234,7 +247,7 @@ def login(username, password, base_url=DEFAULT_BASE_URL):
 
 
 def _rutas_foto(session):
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     return os.path.join(acc_dir, "foto"), os.path.join(acc_dir, "foto.json")
 
 
@@ -678,7 +691,7 @@ MATERIAL_MAX_BYTES = 30_000_000
 
 def load_items(session):
     """Tareas y exámenes de Aules más los que has apuntado tú."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     return _load_aules_items(acc_dir) + items_propios(acc_dir)
 
 
@@ -720,7 +733,7 @@ def aplicar_marcas(acc_dir, items):
 
 def marcar_tarea(session, item_id, marca):
     """Pone o quita (marca vacía) una marca a una tarea de Aules. Lanza ValueError con un mensaje para el usuario."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     if marca and marca not in MARCAS:
         raise ValueError("Marca desconocida.")
     if not any(a["id"] == item_id for a in _load_aules_items(acc_dir)):
@@ -776,7 +789,7 @@ def hora_de_clase(session, curso, dia):
     """Hora a la que empieza esa asignatura ese día según el horario, o None."""
     try:
         activo = horario_para_fecha(horarios_disponibles(session), datetime.combine(dia, hora_del_dia()))
-        horario = obtener_horario(session, activo, account_dir(session["username"])) if activo else None
+        horario = obtener_horario(session, activo, carpeta(session)) if activo else None
     except Exception:
         return None
     if dia.weekday() >= 5 or not horario:
@@ -789,7 +802,7 @@ def hora_de_clase(session, curso, dia):
 
 def guardar_propia(session, datos):
     """Crea o edita una tarea/examen apuntado a mano. Lanza ValueError con un mensaje para el usuario."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     nombre = " ".join(str(datos.get("name") or "").split())[:200]
     curso = " ".join(str(datos.get("course") or "").split())[:200]
     tipo = datos.get("kind")
@@ -829,7 +842,7 @@ def guardar_propia(session, datos):
 
 
 def marcar_propia(session, propia_id, hecha):
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     propias = cargar_propias(acc_dir)
     for x in propias:
         if x["id"] == propia_id:
@@ -840,7 +853,7 @@ def marcar_propia(session, propia_id, hecha):
 
 
 def borrar_propia(session, propia_id):
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     propias = cargar_propias(acc_dir)
     restantes = [x for x in propias if x["id"] != propia_id]
     if len(restantes) == len(propias):
@@ -1020,7 +1033,7 @@ def respuesta_entregada(session, item):
     modulo, _, assignid = item["id"].partition("_")
     if modulo not in ("assign", "assigngva") or not assignid.isdigit():
         return "", []
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     st = call_ws(session["base_url"], session["token"], f"mod_{modulo}_get_submission_status", {"assignid": int(assignid)})
     last = st.get("lastattempt") or {}
     entrega = last.get("submission") or last.get("teamsubmission") or {}
@@ -1168,7 +1181,7 @@ def entregar(session, item, archivos, texto="", acepta_declaracion=False):
 
 def _marcar_entregada(session, item_id):
     """Pone la tarea como entregada al momento, sin esperar a la siguiente comprobación."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     items = _load_aules_items(acc_dir)
     for a in items:
         if a["id"] == item_id:
@@ -1209,7 +1222,7 @@ def respuesta_previa(session, previa, cache_ia):
 
 
 def fetch_course_material(session, course_id, course_name, limit=12):
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     ctx = Ctx(
         base_url=session["base_url"],
         token=session["token"],
@@ -1324,7 +1337,7 @@ def fetch_teachers(ctx, courses, correos):
 
 def load_teachers(session):
     try:
-        with open(os.path.join(account_dir(session["username"]), "profesores.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(carpeta(session), "profesores.json"), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {"profesores": [], "otros": []}
@@ -1395,7 +1408,7 @@ def mark_new_materials(state, materiales, now_ts, first_sync, clave="materiales"
 
 def load_posts(session):
     try:
-        with open(os.path.join(account_dir(session["username"]), "posts.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(carpeta(session), "posts.json"), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return []
@@ -1403,7 +1416,7 @@ def load_posts(session):
 
 def _load_json_list(session, nombre):
     try:
-        with open(os.path.join(account_dir(session["username"]), nombre), "r", encoding="utf-8") as f:
+        with open(os.path.join(carpeta(session), nombre), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return []
@@ -1419,7 +1432,7 @@ def load_messages(session):
 
 def load_materials(session):
     try:
-        with open(os.path.join(account_dir(session["username"]), "materiales.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(carpeta(session), "materiales.json"), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return []
@@ -1428,7 +1441,7 @@ def load_materials(session):
 def descargar_material(session, material):
     """Descarga (si hace falta) un archivo del curso y devuelve su ruta local."""
     destino = os.path.join(
-        account_dir(session["username"]),
+        carpeta(session),
         "material",
         sanitize(material["course"]),
         sanitize(material["filename"]),
@@ -1753,7 +1766,7 @@ def plantilla_horario(session, material_id):
 
 def obtener_horario(session, material, acc_dir=None):
     """Un horario ya listo para usar; si no está guardado (o el lector ha mejorado) se lee del PDF."""
-    acc_dir = acc_dir or account_dir(session["username"])
+    acc_dir = acc_dir or carpeta(session)
     guardado = cargar_horarios(acc_dir).get(material["id"])
     # Lo editado a mano se respeta siempre; lo leído del PDF se vuelve a leer si el lector ha mejorado.
     if guardado and (guardado.get("modelo") != "leído del PDF" or guardado.get("version") == VERSION_LECTOR_HORARIO):
@@ -1769,7 +1782,7 @@ def obtener_horario(session, material, acc_dir=None):
 
 def releer_horario(session, material_id):
     """Descarta las correcciones a mano y vuelve a leer el horario del PDF."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     cache = cargar_horarios(acc_dir)
     cache.pop(material_id, None)
     write_atomic(os.path.join(acc_dir, "horarios.json"), json.dumps(cache, ensure_ascii=False, indent=2))
@@ -1806,7 +1819,7 @@ def horarios_todos(session):
 
 def guardar_horario(session, material_id, horario, origen="editado a mano"):
     """Guarda un horario editado a mano, con la misma forma que el interpretado por la IA."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     dias = {}
     for dia, franjas in (horario.get("dias") or {}).items():
         limpias = []
@@ -2156,7 +2169,7 @@ def send_notifications(username, new_items, exam_reminders, new_posts, new_mater
 
 
 def run_check(session):
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     os.makedirs(acc_dir, exist_ok=True)
     base_url, token = session["base_url"], session["token"]
 
@@ -2256,7 +2269,7 @@ def run_check(session):
 
 def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
     """Genera la pantalla principal con lo último guardado. Sin consultar Aules, así que es instantáneo."""
-    acc_dir = account_dir(session["username"])
+    acc_dir = carpeta(session)
     previo = load_report_status(session)
     warnings = previo.get("warnings", []) if warnings is None else warnings
     cursos = previo.get("cursos", []) if cursos is None else cursos
@@ -2293,7 +2306,7 @@ def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
 
 def load_report_status(session):
     try:
-        with open(os.path.join(account_dir(session["username"]), "estado.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(carpeta(session), "estado.json"), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}

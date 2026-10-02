@@ -430,6 +430,37 @@ class CuantoLlevo(unittest.TestCase):
         self.assertEqual(interfaz._progreso_html(None), "")
 
 
+class Etapas(unittest.TestCase):
+    def test_cada_etapa_tiene_su_carpeta_y_fp_sigue_igual(self):
+        fp = {"username": "10901748", "base_url": "https://aules.edu.gva.es/fp"}
+        bach = dict(fp, base_url="https://aules.edu.gva.es/batxillerat")
+        eso = dict(fp, base_url="https://aules.edu.gva.es/eso46/")
+        self.assertEqual(os.path.basename(core.carpeta(fp)), "10901748")  # las cuentas de FP no se mueven
+        self.assertEqual(os.path.basename(core.carpeta(bach)), "10901748@batxillerat")
+        self.assertEqual(os.path.basename(core.carpeta(eso)), "10901748@eso46")
+        self.assertEqual(os.path.basename(core.carpeta({"username": "10901748"})), "10901748")  # sesiones antiguas
+
+    def test_solo_se_entra_en_los_aules_de_la_lista(self):
+        with mock.patch.object(core, "get_token", side_effect=AssertionError("no debía conectarse")):
+            with self.assertRaisesRegex(core.LoginError, "Elige una etapa"):
+                core.login("alumno", "clave", "https://otra-web.example/moodle")
+        sitio = {"firstname": "Ana", "fullname": "Ana Prueba"}
+        with mock.patch.object(core, "get_token", return_value="t") as token, \
+                mock.patch.object(core, "call_ws", return_value=sitio), mock.patch.object(core, "save_session"), \
+                mock.patch.object(core, "log"):
+            sesion = core.login("alumno", "clave", interfaz.PORTALES["eso03"][1])
+        self.assertEqual(token.call_args[0][0], "https://aules.edu.gva.es/eso03")
+        self.assertEqual(interfaz.portal_de(sesion["base_url"]), "eso03")
+
+    def test_formulario_y_cabecera(self):
+        formulario = interfaz.render_login(portal="batxillerat")
+        self.assertIn('<option value="batxillerat" selected>Bachillerato</option>', formulario)
+        for clave in ("fp", "eso03", "eso46", "eso12"):
+            self.assertIn(f'<option value="{clave}"', formulario)
+        pagina = interfaz.build_report([], [], {"username": "x", "base_url": "https://aules.edu.gva.es/eso12"}, [], 48)
+        self.assertIn("Aules · ESO · Castellón", pagina)
+
+
 class Temas(unittest.TestCase):
     def test_todos_los_temas_generan_su_css(self):
         for clave, tema in temas.TEMAS.items():

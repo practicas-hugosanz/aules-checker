@@ -96,7 +96,8 @@ class Handler(BaseHTTPRequestHandler):
 
         session = core.load_session()
         if path == "/login":
-            return self._send(200, interfaz.render_login(can_cancel=session is not None))
+            portal = interfaz.portal_de(session.get("base_url")) if session else "fp"
+            return self._send(200, interfaz.render_login(can_cancel=session is not None, portal=portal))
         if not session:
             return self._redirect("/login")
         if path == "/ajustes":
@@ -104,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/horario":
             seleccionado = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             return self._send(200, interfaz.render_horario(
-                core.horarios_todos(session), seleccionado, core.dias_sin_clase(core.account_dir(session["username"]))))
+                core.horarios_todos(session), seleccionado, core.dias_sin_clase(core.carpeta(session))))
         if path == "/profesores":
             return self._send(200, interfaz.render_profesores(core.load_teachers(session)))
         if path == "/materiales":
@@ -133,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, "No encontrado", "text/plain; charset=utf-8")
 
     def _serve_attachment(self, session, path):
-        base = os.path.realpath(os.path.join(core.account_dir(session["username"]), "adjuntos"))
+        base = os.path.realpath(os.path.join(core.carpeta(session), "adjuntos"))
         target = os.path.realpath(os.path.join(base, unquote(path[len("/adjuntos/"):])))
         try:
             inside = os.path.commonpath([base, target]) == base
@@ -165,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect(material["url"])
 
         destino = os.path.join(
-            core.account_dir(session["username"]),
+            core.carpeta(session),
             "material",
             core.sanitize(material["course"]),
             core.sanitize(material["filename"]),
@@ -200,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/logout":
             actual = core.load_session()
             if actual:
-                core.borrar_contrasena(actual["username"])
+                core.borrar_contrasena(actual)
             core.clear_session()
             core.log("Sesión cerrada")
             return self._redirect("/login")
@@ -230,18 +231,20 @@ class Handler(BaseHTTPRequestHandler):
         form = parse_qs(self._body())
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
+        portal = form.get("portal", ["fp"])[0]
+        portal = portal if portal in interfaz.PORTALES else "fp"
         can_cancel = core.load_session() is not None
         try:
-            session = core.login(username, password)
+            session = core.login(username, password, interfaz.PORTALES[portal][1])
         except core.LoginError as e:
-            return self._send(401, interfaz.render_login(str(e), username, can_cancel))
+            return self._send(401, interfaz.render_login(str(e), username, can_cancel, portal))
         except requests.RequestException:
-            return self._send(502, interfaz.render_login("No se pudo conectar con Aules. Inténtalo de nuevo.", username, can_cancel))
+            return self._send(502, interfaz.render_login("No se pudo conectar con Aules. Inténtalo de nuevo.", username, can_cancel, portal))
         try:
             if form.get("recordar", [""])[0] == "1":
-                core.guardar_contrasena(session["username"], password)
+                core.guardar_contrasena(session, password)
             else:
-                core.borrar_contrasena(session["username"])
+                core.borrar_contrasena(session)
         except OSError as e:
             core.log(f"No se pudo guardar la contraseña cifrada: {e}")
         if self._check_or_respond(session):
@@ -295,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             core.log(f"No se pudo leer el estado de entrega de «{item['name']}»: {e}")
             return self._json(502, {"error": "No se pudo consultar Aules. Inténtalo de nuevo."})
-        borrador = core.archivos_del_borrador(ia.cargar_cache(core.account_dir(session["username"])), item)
+        borrador = core.archivos_del_borrador(ia.cargar_cache(core.carpeta(session)), item)
         return self._json(200, {
             "tarea": {"id": item["id"], "name": item["name"], "course": item["course"], "duedate": item.get("duedate") or 0},
             "config": item["entrega"], "estado": estado,
@@ -316,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "No encuentro esa tarea. Pulsa Actualizar y vuelve a intentarlo."})
         # Del borrador solo se aceptan archivos que la IA escribió para esta tarea, leídos de su carpeta.
         del_borrador = {os.path.basename(r): r for r in core.archivos_del_borrador(
-            ia.cargar_cache(core.account_dir(session["username"])), item)}
+            ia.cargar_cache(core.carpeta(session)), item)}
         for nombre in datos.get("borrador") or []:
             if nombre not in del_borrador:
                 return self._json(400, {"error": f"«{nombre}» no es un archivo del borrador de esta tarea."})
@@ -430,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json(400, {"error": "Petición mal formada."})
 
-        acc_dir = core.account_dir(session["username"])
+        acc_dir = core.carpeta(session)
         item = next((i for i in core.load_items(session) if i["id"] == datos.get("id")), None)
         if not item:
             return self._json(404, {"error": "No encuentro esa tarea. Pulsa Actualizar y vuelve a intentarlo."})

@@ -9,6 +9,24 @@ from urllib.parse import quote
 
 from temas import MODOS, PREVIAS_CSS, TEMAS, TEMAS_CSS, con_tema, elegido
 
+# Cada etapa tiene su propio Aules (en ESO, uno por provincia). La clave es la última parte de su dirección.
+PORTALES = {
+    "fp": ("FP presencial", "https://aules.edu.gva.es/fp"),
+    "batxillerat": ("Bachillerato", "https://aules.edu.gva.es/batxillerat"),
+    "eso46": ("ESO · Valencia", "https://aules.edu.gva.es/eso46"),
+    "eso03": ("ESO · Alicante", "https://aules.edu.gva.es/eso03"),
+    "eso12": ("ESO · Castellón", "https://aules.edu.gva.es/eso12"),
+    "semipresencial": ("FP semipresencial", "https://aules.edu.gva.es/semipresencial"),
+    "fpa": ("Personas adultas (FPA)", "https://aules.edu.gva.es/fpa"),
+}
+
+
+def portal_de(base_url):
+    """Clave de la etapa a partir de la dirección de Aules ("fp" si no se reconoce)."""
+    clave = (base_url or "").rstrip("/").rsplit("/", 1)[-1]
+    return clave if clave in PORTALES else "fp"
+
+
 DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 KIND_LABELS = {"examen": "Examen", "tarea": "Tarea", "aviso": "Aviso"}
@@ -877,6 +895,13 @@ LOGIN_CSS = """
 .input input { width: 100%; border: 1px solid var(--border); background: var(--card-2); color: var(--text); border-radius: 12px;
   padding: 11px 44px 11px 38px; font: inherit; font-size: 15px; outline: none; transition: border-color .15s, box-shadow .15s, background .15s; }
 .input input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); background: var(--card); }
+.input.select .i { z-index: 1; }
+.input select { width: 100%; border: 1px solid var(--border); background: var(--card-2); color: var(--text); border-radius: 12px;
+  padding: 11px 14px 11px 38px; font: inherit; font-size: 15px; outline: none; appearance: none; cursor: pointer; }
+.input select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.input.select::after { content: ""; position: absolute; right: 16px; top: 50%; width: 7px; height: 7px; margin-top: -6px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); pointer-events: none; }
+.input select { padding-right: 38px; }
 .toggle { position: absolute; right: 6px; border: 0; background: none; color: var(--muted); padding: 6px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; }
 .toggle:hover { color: var(--text); background: var(--gray-soft); }
 .btn-primary { width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 8px; border: 0; border-radius: 12px;
@@ -897,10 +922,6 @@ LOGIN_CSS = """
 AJUSTES_CSS = """
 .auth-card.ancha { max-width: 520px; }
 .alert.ok { background: var(--green-soft); color: var(--green); }
-.input.select .i { z-index: 1; }
-.input select { width: 100%; border: 1px solid var(--border); background: var(--card-2); color: var(--text); border-radius: 12px;
-  padding: 11px 14px 11px 38px; font: inherit; font-size: 15px; outline: none; appearance: none; cursor: pointer; }
-.input select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .opt { color: var(--muted); font-weight: 400; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin: 4px 0 16px; cursor: pointer; }
 .check input { accent-color: var(--accent); }
@@ -2252,7 +2273,7 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
 <div class="wrap" id="informe" data-firma="{html.escape(firma)}">
   <div class="hero">
     <div>
-      <p class="eyebrow" id="fecha-hoy">Aules · FP</p>
+      <p class="eyebrow" id="fecha-hoy">Aules · {html.escape(PORTALES[portal_de(session.get("base_url"))][0])}</p>
       <h1>{greeting}</h1>
       <div class="updated"><span class="dot"></span>Actualizado <span id="updated-rel" data-ts="{int(now_ts)}">ahora</span> · <span id="updated-abs">{now.strftime('%d/%m %H:%M')}</span></div>
     </div>
@@ -2335,16 +2356,23 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
                  REPORT_JS + AHORA_JS + REPORT_JS_FIN + PROPIAS_JS + ENTREGA_JS)
 
 
-def render_login(error="", username="", can_cancel=False):
+def render_login(error="", username="", can_cancel=False, portal="fp"):
     alert = f'<div class="alert" role="alert">{icon("alert-circle")}<span>{html.escape(error)}</span></div>' if error else ""
     cancel = f'<a class="btn-link" href="/">{icon("arrow-left", 14)}Volver a mi cuenta actual</a>' if can_cancel else ""
+    opciones_portal = "".join(
+        f'<option value="{clave}"{" selected" if clave == portal else ""}>{html.escape(nombre)}</option>'
+        for clave, (nombre, _) in PORTALES.items()
+    )
     body = f"""<div class="auth">
   <div class="auth-card">
     <div class="brand"><span class="brand-mark">{icon("book-open", 20)}</span>Aules · Resumen</div>
     <h1>{'Cambiar de cuenta' if can_cancel else 'Inicia sesión'}</h1>
-    <p class="auth-sub">Entra con tu usuario y contraseña de Aules FP.</p>
+    <p class="auth-sub">Entra con tu usuario y contraseña de Aules.</p>
     {alert}
     <form method="post" action="/login" id="login-form">
+      <label class="field"><span>Etapa</span>
+        <div class="input select">{icon("graduation-cap")}<select name="portal">{opciones_portal}</select></div>
+      </label>
       <label class="field"><span>Usuario</span>
         <div class="input">{icon("user")}<input name="username" autocomplete="username" required autofocus value="{html.escape(username)}"></div>
       </label>

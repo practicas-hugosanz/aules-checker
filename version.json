@@ -1,17 +1,17 @@
 {
-  "version": "1.6.1",
+  "version": "1.7.0",
   "cambios": [
-    "Resumen por la mañana con lo que vence hoy y mañana (antes solo por la tarde, y a quien no tenía la app abierta a las 18:00 no le llegaba nunca)",
-    "Un examen nuevo ya no llega con dos avisos a la vez",
-    "Los recordatorios de cuestionarios dicen si se abren o se cierran, en vez de «Examen en menos de X h»"
+    "Ya no es solo para FP: al iniciar sesión eliges tu etapa (FP presencial, Bachillerato, ESO de Valencia, Alicante o Castellón, FP semipresencial o Personas adultas) y ves tus clases",
+    "Cada etapa guarda sus datos y su contraseña por separado; las cuentas de FP no cambian",
+    "Los desplegables llevan su flecha para que se note que se pueden abrir"
   ],
   "archivos": {
-    "aules_checker.py": "c4772ae4105fdb2f12e54a314868b338d4ffaa2f1e7c3a0376df593d0515c3be",
-    "servidor.py": "43794eb4854872640f51aa30344a3ce87ffc3e841fe4c2e65a4288f7df5a0a33",
-    "interfaz.py": "bd470575bc80686ae44b690a512c3311186e5e79cdd0ab8ca16617ae31b10e1a",
+    "aules_checker.py": "6c0838ec793e6148c3fa89a98e57d7d03d22612ef92354ec4c87d7dbcb80087e",
+    "servidor.py": "ec3b11dfa61c599c801d0fdac91707688ccf1e0e3ded36e924df6feb0f2b31af",
+    "interfaz.py": "ec719cf4239c09039f556837915c230f5e52f470c432542be1533dfc547db198",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
     "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
-    "actualizador.py": "aedb03d767c015ece75e132776ad7de01e5521446bcc3d70efcdcd67f5c78ca4",
+    "actualizador.py": "2cd8ceea05ac24d54faa9a26ebca804665215c316986ba08bd3ac221b81cc1b9",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }
