@@ -34,6 +34,9 @@ MESSAGE_MAX_AGE_SECONDS = 60 * 86400
 MATERIALS_EVERY_SECONDS = 10 * 60
 # Hora a partir de la cual se avisa de lo que vence al día siguiente.
 DAILY_SUMMARY_HOUR = 18
+# Desde esta hora, la primera comprobación del día avisa de lo que vence hoy y mañana. Hace falta porque
+# muchos solo tienen la app abierta en clase, por la mañana, y el resumen de la tarde no les llegaría nunca.
+MORNING_SUMMARY_HOUR = 7
 SERVER_HEALTH_URL = "http://127.0.0.1:8765/health"
 
 http = requests.Session()
@@ -1995,6 +1998,26 @@ def mark_new_messages(state, mensajes, now_ts, first_sync):
     return nuevos
 
 
+def titulo_recordatorio(recordatorios, normal):
+    """Un cuestionario avisa de cuándo se abre o cuándo se cierra; si no, de cuándo vence."""
+    horas = min(h for _, h in recordatorios)
+    etiquetas = {a.get("due_label") for a, _ in recordatorios}
+    if etiquetas == {"Abre"}:
+        return f"Se abre en menos de {horas} h"
+    if etiquetas == {"Cierra"}:
+        return f"Cierra en menos de {horas} h"
+    return normal.format(h=horas)
+
+
+def sin_las_nuevas(recordatorios, nuevas):
+    """Lo que acaba de aparecer ya se avisa como nuevo: un segundo aviso a la vez solo molesta.
+
+    El recordatorio ya queda apuntado como enviado, así que no salta luego por ese mismo umbral.
+    """
+    ids = {a["id"] for a in nuevas}
+    return [(a, h) for a, h in recordatorios if a["id"] not in ids]
+
+
 def pending_reminders(state, items, now_ts, kind, hours):
     """Actividades de `kind` sin hacer que acaban de cruzar alguno de los umbrales de `hours`."""
     sent_by_key = state["reminders"]
@@ -2019,17 +2042,25 @@ DIAS_NOMBRE = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", 
 
 
 def tomorrow_summary(state, items, now, sin_clase=None):
-    """Una vez al día, por la tarde: lo que vence hasta el próximo día de clase y aún no has hecho."""
+    """Lo que vence pronto y aún no has hecho, una vez por la mañana (hoy y mañana) y otra por la tarde (mañana)."""
     hoy = now.strftime("%Y-%m-%d")
-    if now.hour < DAILY_SUMMARY_HOUR or state.get("resumen_dia") == hoy:
-        return None
-    state["resumen_dia"] = hoy
-    inicio = datetime(now.year, now.month, now.day) + timedelta(days=1)
     # Fines de semana, festivos y vacaciones se saltan: se mira hasta que vuelve a haber clase.
     proximo = siguiente_dia_lectivo(now.date(), sin_clase or {})
     fin = datetime.combine(proximo, hora_del_dia()) + timedelta(days=1)
-    dias = (fin - inicio).days
-    cuando = "mañana" if dias == 1 else f"antes de volver a clase ({DIAS_NOMBRE[proximo.weekday()]} {proximo.day})"
+    manana = datetime(now.year, now.month, now.day) + timedelta(days=1)
+    hasta = "mañana" if (fin - manana).days == 1 else f"antes de volver a clase ({DIAS_NOMBRE[proximo.weekday()]} {proximo.day})"
+    if now.hour >= DAILY_SUMMARY_HOUR:
+        if state.get("resumen_dia") == hoy:
+            return None
+        state["resumen_dia"] = hoy
+        inicio, cuando = manana, hasta
+    elif now.hour >= MORNING_SUMMARY_HOUR:
+        if state.get("resumen_manana") == hoy:
+            return None
+        state["resumen_manana"] = hoy
+        inicio, cuando = now, "hoy y " + hasta
+    else:
+        return None
     pendientes = sorted(
         (
             a
@@ -2073,12 +2104,12 @@ def send_notifications(username, new_items, exam_reminders, new_posts, new_mater
         hours = min(h for _, h in exam_reminders)
         exams = [a for a, _ in exam_reminders]
         log(f"Recordatorio examen (<{hours} h): " + ", ".join(a["name"] for a in exams))
-        notify(f"Examen en menos de {hours} h", exams, timeout=30)
+        notify(titulo_recordatorio(exam_reminders, "Examen en menos de {h} h"), exams, timeout=30)
     if task_reminders:
         hours = min(h for _, h in task_reminders)
         tasks = [a for a, _ in task_reminders]
         log(f"Recordatorio entrega (<{hours} h): " + ", ".join(a["name"] for a in tasks))
-        notify(f"Sin entregar: vence en menos de {hours} h", tasks, timeout=20)
+        notify(titulo_recordatorio(task_reminders, "Sin entregar: vence en menos de {h} h"), tasks, timeout=20)
     if new_tasks:
         log(f"{len(new_tasks)} tarea(s) nueva(s): " + ", ".join(a["name"] for a in new_tasks))
         notify(f"Aules: {len(new_tasks)} tarea(s) nueva(s)", new_tasks)
@@ -2195,8 +2226,8 @@ def run_check(session):
     new_messages = mark_new_messages(state, mensajes, now_ts, first_sync) if mensajes is not None else []
     # Recordatorios y resumen también para lo que has apuntado tú, y sin lo que marcaste como hecho o como aviso.
     todos = aplicar_marcas(acc_dir, items) + items_propios(acc_dir)
-    exam_reminders = pending_reminders(state, todos, now_ts, "examen", EXAM_REMINDER_HOURS)
-    task_reminders = pending_reminders(state, todos, now_ts, "tarea", TASK_REMINDER_HOURS)
+    exam_reminders = sin_las_nuevas(pending_reminders(state, todos, now_ts, "examen", EXAM_REMINDER_HOURS), new_items)
+    task_reminders = sin_las_nuevas(pending_reminders(state, todos, now_ts, "tarea", TASK_REMINDER_HOURS), new_items)
     summary = tomorrow_summary(state, todos, datetime.now(), dias_sin_clase(acc_dir))
 
     # Si algo no se pudo leer esta vez, se muestra lo último que sí se leyó.

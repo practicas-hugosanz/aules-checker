@@ -171,6 +171,37 @@ class AvisoDeNuevo(unittest.TestCase):
         self.assertEqual({i["id"]: i["is_new"] for i in items}, {"vieja": False, "reciente": True, "nueva": True})
 
 
+class ResumenYRecordatorios(unittest.TestCase):
+    def tarea(self, id_, cuando, kind="tarea", etiqueta="Entrega"):
+        return {"id": id_, "name": id_, "kind": kind, "done": False, "duedate": cuando.timestamp(), "due_label": etiqueta}
+
+    def test_resumen_de_la_manana_y_de_la_tarde(self):
+        jueves = core.datetime(2026, 10, 1)  # jueves lectivo; el viernes también
+        items = [self.tarea("hoy", jueves.replace(hour=14)), self.tarea("manana", jueves.replace(hour=23) + core.timedelta(days=1)),
+                 self.tarea("lunes", jueves + core.timedelta(days=4, hours=10)), self.tarea("ya_paso", jueves.replace(hour=7))]
+        estado = {}
+        self.assertIsNone(core.tomorrow_summary(estado, items, jueves.replace(hour=6), {}))
+        manana = core.tomorrow_summary(estado, items, jueves.replace(hour=8), {})
+        self.assertEqual((manana["cuando"], [a["id"] for a in manana["items"]]), ("hoy y mañana", ["hoy", "manana"]))
+        self.assertIsNone(core.tomorrow_summary(estado, items, jueves.replace(hour=11), {}))  # una vez por la mañana
+        tarde = core.tomorrow_summary(estado, items, jueves.replace(hour=19), {})
+        self.assertEqual((tarde["cuando"], [a["id"] for a in tarde["items"]]), ("mañana", ["manana"]))
+
+    def test_un_examen_nuevo_no_avisa_dos_veces(self):
+        estado, ahora = {"reminders": {}}, 1_000_000
+        examen = {"id": "quiz_1", "name": "T1B3", "kind": "examen", "done": False, "duedate": ahora + 2 * 3600, "due_label": "Abre"}
+        recordatorios = core.pending_reminders(estado, [examen], ahora, "examen", core.EXAM_REMINDER_HOURS)
+        self.assertEqual(core.sin_las_nuevas(recordatorios, [examen]), [])
+        # Queda apuntado: en la siguiente comprobación no salta por el mismo umbral.
+        self.assertEqual(core.pending_reminders(estado, [examen], ahora + 90, "examen", core.EXAM_REMINDER_HOURS), [])
+
+    def test_titulos_de_los_cuestionarios(self):
+        abre, cierra, normal = ({"due_label": e} for e in ("Abre", "Cierra", "Examen"))
+        self.assertEqual(core.titulo_recordatorio([(abre, 3)], "Examen en menos de {h} h"), "Se abre en menos de 3 h")
+        self.assertEqual(core.titulo_recordatorio([(cierra, 48)], "Examen en menos de {h} h"), "Cierra en menos de 48 h")
+        self.assertEqual(core.titulo_recordatorio([(normal, 24), (abre, 3)], "Examen en menos de {h} h"), "Examen en menos de 3 h")
+
+
 class TareasModificadas(unittest.TestCase):
     def tarea(self, **cambios):
         return dict({"id": "assign_1", "name": "Práctica 1", "course": "Redes", "kind": "tarea", "done": False, "status": "",
