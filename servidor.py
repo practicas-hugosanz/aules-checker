@@ -1,3 +1,4 @@
+import base64
 import json
 import mimetypes
 import os
@@ -21,6 +22,8 @@ PORT = 8765
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
 MAX_BODY = 100_000
+# Una entrega lleva los archivos en base64 (un tercio más grandes): hasta unos 60 MB de archivos.
+MAX_BODY_ENTREGA = 80_000_000
 CHECK_EVERY_SECONDS = 90
 
 check_lock = threading.Lock()
@@ -68,8 +71,8 @@ class Handler(BaseHTTPRequestHandler):
         # Evita DNS rebinding: solo se aceptan peticiones dirigidas a localhost.
         return self.headers.get("Host", "") in ALLOWED_HOSTS
 
-    def _body(self):
-        length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+    def _body(self, maximo=MAX_BODY):
+        length = min(int(self.headers.get("Content-Length") or 0), maximo)
         return self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
 
     def _check_or_respond(self, session):
@@ -108,6 +111,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, interfaz.render_materiales(session, core.load_materials(session)))
         if path == "/api/informe":
             return self._json(200, core.load_report_status(session))
+        if path == "/api/entrega":
+            return self._get_entrega(session)
         if path == "/api/actualizacion":
             return self._json(200, actualizador.estado())
         if path in ("/", "/informe"):
@@ -215,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_apariencia()
         if path.startswith("/ia/"):
             return self._post_ia(session, path)
+        if path == "/api/entregar":
+            return self._post_entregar(session)
         if path.startswith("/api/"):
             return self._post_api(session, path)
         self._send(404, "No encontrado", "text/plain; charset=utf-8")
@@ -272,6 +279,60 @@ class Handler(BaseHTTPRequestHandler):
         else:
             correcto = "Ajustes guardados."
         self._send(200, interfaz.render_ajustes(ia.cargar_ajustes(), ia.PROVEEDORES, error, correcto, seccion="ia"))
+
+    def _tarea(self, session, item_id):
+        return next((i for i in core.load_items(session) if i["id"] == item_id), None)
+
+    def _get_entrega(self, session):
+        """Lo que necesita el diálogo de entrega: qué admite la tarea, qué entregaste ya y los archivos del borrador."""
+        item = self._tarea(session, parse_qs(urlparse(self.path).query).get("id", [""])[0])
+        if not item or not item.get("entrega"):
+            return self._json(404, {"error": "Esta tarea no se puede entregar desde la app."})
+        try:
+            estado = core.estado_entrega(session, item)
+        except core.SessionExpired:
+            return self._json(401, {"error": "La sesión de Aules ha caducado."})
+        except Exception as e:
+            core.log(f"No se pudo leer el estado de entrega de «{item['name']}»: {e}")
+            return self._json(502, {"error": "No se pudo consultar Aules. Inténtalo de nuevo."})
+        borrador = core.archivos_del_borrador(ia.cargar_cache(core.account_dir(session["username"])), item)
+        return self._json(200, {
+            "tarea": {"id": item["id"], "name": item["name"], "course": item["course"], "duedate": item.get("duedate") or 0},
+            "config": item["entrega"], "estado": estado,
+            "borrador": [{"nombre": os.path.basename(r), "bytes": os.path.getsize(r)} for r in borrador],
+        })
+
+    def _post_entregar(self, session):
+        if int(self.headers.get("Content-Length") or 0) > MAX_BODY_ENTREGA:
+            return self._json(413, {"error": "Los archivos pesan demasiado para entregarlos desde la app."})
+        try:
+            datos = json.loads(self._body(MAX_BODY_ENTREGA) or "{}")
+            archivos = [(os.path.basename(str(a["nombre"])), base64.b64decode(a["datos"], validate=True))
+                        for a in datos.get("archivos") or []]
+        except (ValueError, KeyError, TypeError):
+            return self._json(400, {"error": "Petición mal formada."})
+        item = self._tarea(session, str(datos.get("id") or ""))
+        if not item:
+            return self._json(404, {"error": "No encuentro esa tarea. Pulsa Actualizar y vuelve a intentarlo."})
+        # Del borrador solo se aceptan archivos que la IA escribió para esta tarea, leídos de su carpeta.
+        del_borrador = {os.path.basename(r): r for r in core.archivos_del_borrador(
+            ia.cargar_cache(core.account_dir(session["username"])), item)}
+        for nombre in datos.get("borrador") or []:
+            if nombre not in del_borrador:
+                return self._json(400, {"error": f"«{nombre}» no es un archivo del borrador de esta tarea."})
+            with open(del_borrador[nombre], "rb") as f:
+                archivos.append((nombre, f.read()))
+        try:
+            with check_lock:
+                estado = core.entregar(session, item, archivos, str(datos.get("texto") or ""), bool(datos.get("acepta")))
+            return self._json(200, {"ok": True, "estado": estado})
+        except core.EntregaError as e:
+            return self._json(400, {"error": str(e)})
+        except core.SessionExpired:
+            return self._json(401, {"error": "La sesión de Aules ha caducado. Vuelve a entrar y repite la entrega."})
+        except Exception as e:
+            core.log(f"ERROR al entregar «{item['name']}»: {e}")
+            return self._json(502, {"error": "No se pudo completar la entrega. Comprueba en Aules si llegó a entregarse."})
 
     def _post_api(self, session, path):
         try:

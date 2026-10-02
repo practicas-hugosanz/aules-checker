@@ -17,6 +17,7 @@ DUE_PREFIXES = {"Abre": "abre ", "Cierra": "cierra "}
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 ICONS = {
+    "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
     "palette": '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/>',
     "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
     "moon": '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
@@ -299,6 +300,15 @@ a.ahora:hover { border-color: var(--accent); }
 .pill-new { background: var(--green-soft); color: var(--green); }
 .pill-done { background: var(--green-soft); color: var(--green); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .pill-draft { background: var(--amber-soft); color: var(--amber); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+.pill-cambio { background: var(--amber-soft); color: var(--amber); }
+.cambios { margin: 6px 0 0; padding: 8px 12px 8px 26px; background: var(--amber-soft); color: var(--amber); border-radius: 10px;
+  font-size: 13px; font-weight: 600; }
+.cambios li + li { margin-top: 2px; }
+.progreso { display: flex; gap: 10px; align-items: flex-start; margin: 6px 4px 4px; padding: 10px 12px; border-radius: 12px;
+  background: var(--card-2); border: 1px solid var(--border); font-size: 13.5px; }
+.progreso > .i { flex: none; margin-top: 2px; }
+.progreso.bien > .i { color: var(--green); } .progreso.mal > .i { color: var(--red); }
+.progreso-origen { margin-top: 3px; font-size: 12px; color: var(--muted); }
 .pill-aprobado { background: var(--green-soft); color: var(--green); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .pill-suspendido { background: var(--red-soft); color: var(--red); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .item-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
@@ -1575,6 +1585,240 @@ def _estado_nota(n):
     return f'<span class="pill {clase}">{icon(icono, 11)}{html.escape(estado)}</span>'
 
 
+ENTREGA_CSS = """
+.entrega-acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.boton-entregar { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--accent); background: var(--accent-soft);
+  color: var(--accent-ink); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; }
+.boton-entregar:hover { background: var(--accent); color: var(--on-accent); }
+.ent-limites { margin: -6px 0 0; font-size: 12.5px; color: var(--muted); }
+.ent-cerrada { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); }
+.ent-aviso { display: flex; gap: 8px; align-items: flex-start; background: var(--amber-soft); color: var(--amber); border-radius: 10px;
+  padding: 8px 12px; font-size: 13px; }
+.ent-aviso .i { flex: none; margin-top: 2px; }
+.ent-bloque { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 550; }
+.ent-lista { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.ent-lista li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--card-2); border: 1px solid var(--border);
+  border-radius: 10px; font-weight: 400; }
+.ent-lista .ent-nombre { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ent-lista .ent-peso { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ent-lista button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px; display: grid; place-items: center; }
+.ent-lista button:hover { color: var(--red); }
+.ent-lista label { display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer; }
+.ent-elegir { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 1px dashed var(--muted); background: transparent;
+  color: var(--text); border-radius: 10px; padding: 8px 14px; font: inherit; font-size: 13.5px; cursor: pointer; }
+.ent-elegir:hover { border-color: var(--accent); color: var(--accent); }
+.ent-declaracion { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; font-weight: 400; cursor: pointer; }
+.ent-declaracion input { margin-top: 3px; accent-color: var(--accent); }
+.ent-resumen { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--text); font-size: 13px; }
+.ent-resumen:empty { display: none; }
+.ent-ok { background: var(--green-soft); color: var(--green); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; font-weight: 600; }
+"""
+
+ENTREGA_JS = """
+(function () {
+  var dlg = document.getElementById('dlg-entrega');
+  if (!dlg) return;
+  var form = document.getElementById('form-entrega');
+  var el = function (id) { return document.getElementById(id); };
+  var datos = null, elegidos = [], confirmar = false;
+
+  function peso(b) { return b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+  function error(texto) { el('ent-error').textContent = texto || ''; el('ent-error').hidden = !texto; }
+  function li(nombre, bytes, extra) {
+    var l = document.createElement('li');
+    var n = document.createElement('span'); n.className = 'ent-nombre'; n.textContent = nombre;
+    var p = document.createElement('span'); p.className = 'ent-peso'; p.textContent = bytes == null ? '' : peso(bytes);
+    l.append(n, p);
+    if (extra) l.append(extra);
+    return l;
+  }
+  function borradorMarcados() {
+    return Array.prototype.map.call(form.querySelectorAll('input[name=borrador]:checked'), function (c) { return c.value; });
+  }
+  function pintarElegidos() {
+    var ul = el('ent-elegidos'); ul.innerHTML = '';
+    elegidos.forEach(function (f, i) {
+      var quitar = document.createElement('button'); quitar.type = 'button'; quitar.title = 'Quitar'; quitar.textContent = '✕';
+      quitar.addEventListener('click', function () { elegidos.splice(i, 1); pintarElegidos(); });
+      ul.append(li(f.name, f.size, quitar));
+    });
+    resumen();
+  }
+  // Resumen de lo que se va a enviar, siempre a la vista antes de pulsar «Entregar».
+  function resumen() {
+    confirmar = false;
+    el('ent-enviar').lastChild.textContent = 'Entregar en Aules';
+    var nombres = elegidos.map(function (f) { return f.name; }).concat(borradorMarcados());
+    var texto = form.texto && form.texto.value.trim();
+    var partes = [];
+    if (nombres.length) partes.push(nombres.length + ' archivo' + (nombres.length > 1 ? 's' : '') + ': ' + nombres.join(', '));
+    if (texto) partes.push('el texto que has escrito');
+    el('ent-resumen').textContent = partes.length ? 'Se entregará ' + partes.join(' y ') + '.' : '';
+    var falta = !partes.length || (datos.config.declaracion && !el('ent-acepta').checked) || !datos.estado.puede;
+    el('ent-enviar').disabled = falta;
+  }
+
+  async function abrir(id) {
+    error(''); el('ent-ok').hidden = true; form.hidden = false; elegidos = []; datos = null;
+    el('ent-titulo').textContent = 'Entregar tarea';
+    el('ent-cuerpo').hidden = true; el('ent-cargando').hidden = false;
+    dlg.showModal();
+    try {
+      var r = await fetch('/api/entrega?id=' + encodeURIComponent(id));
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo consultar Aules.');
+      datos = d;
+    } catch (e) { el('ent-cargando').hidden = true; error(e.message); return; }
+    var c = datos.config, est = datos.estado;
+    el('ent-titulo').textContent = datos.tarea.name;
+    el('ent-sub').textContent = datos.tarea.course;
+    var lim = [];
+    if (c.archivos) lim.push('Hasta ' + c.max_archivos + ' archivo' + (c.max_archivos > 1 ? 's' : '') + (c.max_bytes ? ' de ' + peso(c.max_bytes) + ' como mucho' : ''));
+    if (c.tipos) lim.push('tipos: ' + c.tipos);
+    if (c.texto) lim.push(c.archivos ? 'también admite texto' : 'se entrega como texto');
+    el('ent-limites').textContent = lim.join(' · ');
+    el('ent-bloqueada').hidden = est.puede; el('ent-bloqueada-txt').textContent = est.motivo;
+    var previo = est.archivos.slice(); if (est.texto) previo.push('texto en línea');
+    el('ent-previa').hidden = !previo.length || !est.puede;
+    el('ent-previa-txt').textContent = 'Ya entregaste: ' + previo.join(', ') + '. Si entregas de nuevo, lo que mandes ahora sustituye a todo eso.';
+    el('ent-bloque-archivos').hidden = !c.archivos;
+    el('ent-bloque-texto').hidden = !c.texto; if (form.texto) form.texto.value = '';
+    var ul = el('ent-borrador'); ul.innerHTML = '';
+    datos.borrador.forEach(function (b) {
+      var lab = document.createElement('label');
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'borrador'; cb.value = b.nombre;
+      cb.addEventListener('change', resumen);
+      var n = document.createElement('span'); n.className = 'ent-nombre'; n.textContent = b.nombre;
+      lab.append(cb, n);
+      var l = document.createElement('li'); l.append(lab);
+      var p = document.createElement('span'); p.className = 'ent-peso'; p.textContent = peso(b.bytes); l.append(p);
+      ul.append(l);
+    });
+    el('ent-bloque-borrador').hidden = !datos.borrador.length || !c.archivos;
+    el('ent-bloque-declaracion').hidden = !c.declaracion; el('ent-declaracion').textContent = c.declaracion; el('ent-acepta').checked = false;
+    el('ent-cargando').hidden = true; el('ent-cuerpo').hidden = false;
+    pintarElegidos();
+  }
+
+  function leer(f) {
+    return new Promise(function (ok, mal) {
+      var r = new FileReader();
+      r.onload = function () { ok({ nombre: f.name, datos: String(r.result).split(',')[1] || '' }); };
+      r.onerror = function () { mal(new Error('No se pudo leer ' + f.name)); };
+      r.readAsDataURL(f);
+    });
+  }
+
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-entregar]');
+    if (b) abrir(b.dataset.entregar);
+  });
+  dlg.querySelectorAll('[data-cerrar]').forEach(function (b) { b.addEventListener('click', function () { dlg.close(); }); });
+  el('ent-elegir').addEventListener('click', function () { el('ent-archivos').click(); });
+  el('ent-archivos').addEventListener('change', function () {
+    Array.prototype.forEach.call(this.files, function (f) { elegidos.push(f); });
+    this.value = '';
+    pintarElegidos();
+  });
+  form.addEventListener('input', resumen);
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    error('');
+    var boton = el('ent-enviar');
+    // Dos pasos: el primer clic pide confirmación; el segundo entrega.
+    if (!confirmar) { confirmar = true; boton.lastChild.textContent = '¿Seguro? Pulsa otra vez para entregar'; return; }
+    boton.disabled = true; boton.lastChild.textContent = 'Entregando…';
+    try {
+      var archivos = await Promise.all(elegidos.map(leer));
+      var r = await fetch('/api/entregar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        id: datos.tarea.id, archivos: archivos, borrador: borradorMarcados(), texto: form.texto ? form.texto.value : '',
+        acepta: el('ent-acepta').checked }) });
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'No se pudo entregar.');
+      form.hidden = true; el('ent-ok').hidden = false;
+      setTimeout(function () { location.reload(); }, 1800);
+    } catch (err) {
+      error(err.message); confirmar = false; resumen();
+    }
+  });
+})();
+"""
+
+
+DIALOGO_ENTREGA = f"""<dialog class="dlg-propia dlg-entrega" id="dlg-entrega">
+    <form id="form-entrega" novalidate>
+      <div class="dlg-cab"><h2 id="ent-titulo">Entregar tarea</h2>
+        <button type="button" class="dlg-cerrar" data-cerrar aria-label="Cerrar">{icon("x", 18)}</button></div>
+      <p class="dlg-sub" id="ent-sub"></p>
+      <p class="dlg-ayuda" id="ent-cargando">Consultando la tarea en Aules…</p>
+      <div id="ent-cuerpo" hidden style="display: contents">
+        <p class="ent-limites" id="ent-limites"></p>
+        <div class="ent-aviso" id="ent-bloqueada" hidden>{icon("lock", 14)}<span id="ent-bloqueada-txt"></span></div>
+        <div class="ent-aviso" id="ent-previa" hidden>{icon("alert-circle", 14)}<span id="ent-previa-txt"></span></div>
+        <div class="ent-bloque" id="ent-bloque-archivos">Archivos
+          <ul class="ent-lista" id="ent-elegidos"></ul>
+          <input type="file" id="ent-archivos" multiple hidden>
+          <button type="button" class="ent-elegir" id="ent-elegir">{icon("upload", 14)}Elegir archivos de tu ordenador</button>
+        </div>
+        <div class="ent-bloque" id="ent-bloque-borrador" hidden>Archivos de tu borrador con IA <em class="opt">(tal como están ahora en su carpeta, con tus cambios)</em>
+          <ul class="ent-lista" id="ent-borrador"></ul>
+        </div>
+        <label class="campo-p" id="ent-bloque-texto" hidden><span>Texto de la entrega</span>
+          <textarea name="texto" rows="5" placeholder="Escribe aquí tu respuesta…"></textarea></label>
+        <div class="ent-bloque" id="ent-bloque-declaracion" hidden>
+          <label class="ent-declaracion"><input type="checkbox" id="ent-acepta"><span id="ent-declaracion"></span></label>
+        </div>
+        <p class="ent-resumen" id="ent-resumen"></p>
+      </div>
+      <div class="dlg-error" id="ent-error" hidden></div>
+      <div class="dlg-botones">
+        <button type="button" class="boton-sec" data-cerrar>Cancelar</button>
+        <button type="submit" class="boton-pri" id="ent-enviar" disabled>{icon("upload", 14)}<span>Entregar en Aules</span></button>
+      </div>
+    </form>
+    <div class="ent-ok" id="ent-ok" hidden style="margin: 20px 22px">{icon("check-circle", 16)} Entregada en Aules. Actualizando…</div>
+  </dialog>"""
+
+
+def _entrega_html(a, now_ts):
+    """Botón para entregar la tarea en Aules desde la app (solo en las que lo admiten y no están corregidas)."""
+    if not a.get("entrega") or a.get("propia") or a.get("marcada") or a["status"].startswith("Calificada"):
+        return ""
+    entrega = a["entrega"]
+    if entrega.get("desde") and now_ts < entrega["desde"]:
+        return f'<div class="entrega-acciones"><span class="ent-cerrada">{icon("clock", 13)}Se podrá entregar desde el {format_due(entrega["desde"])}</span></div>'
+    if entrega.get("corte") and now_ts > entrega["corte"] and a.get("due_label") != "Prórroga":
+        return "" if a["done"] else f'<div class="entrega-acciones"><span class="ent-cerrada">{icon("lock", 13)}Plazo de entrega cerrado</span></div>'
+    texto = "Cambiar la entrega" if a["done"] else "Entregar"
+    return (f'<div class="entrega-acciones"><button type="button" class="boton-entregar" data-entregar="{html.escape(a["id"])}">'
+            f'{icon("upload", 13)}{texto}</button></div>')
+
+
+def _num(valor):
+    return f"{valor:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _progreso_html(p):
+    """«¿Cuánto llevo?» de una asignatura: media de lo corregido y lo que te falta para el 5."""
+    if not p:
+        return ""
+    media = f'Llevas un <strong>{_num(p["media"])}</strong> de media en lo que ya está corregido'
+    if p["corregido"] >= 100 or p["necesaria"] is None:
+        detalle = "Ya está corregido todo lo que cuenta para la nota."
+    elif p["necesaria"] <= 0:
+        detalle = f'Lo corregido es el {p["corregido"]} % de la nota, y con eso ya tienes el 5 aunque no sumes nada más.'
+    elif p["necesaria"] > 10:
+        detalle = f'Lo corregido es el {p["corregido"]} % de la nota. Con lo que queda ya no se llega al 5 de media.'
+    else:
+        detalle = (f'Lo corregido es el {p["corregido"]} % de la nota. Para llegar al 5 te hace falta sacar '
+                   f'<strong>{_num(p["necesaria"])}</strong> de media en lo que queda.')
+    origen = ("Calculado con los pesos que ha puesto el profe en Aules." if p["fuente"] == "aules" else
+              "Calculado con los porcentajes del nombre de cada tarea. En FP normalmente hay que aprobar cada RA por separado.")
+    clase = " bien" if p["media"] >= 5 else " mal"
+    return (f'<div class="progreso{clase}">{icon("graduation-cap", 16)}<div><div>{media}. {detalle}</div>'
+            f'<div class="progreso-origen">{origen}</div></div></div>')
+
+
 def _marcas_html(a):
     """Botones para corregir a mano una tarea de Aules: entregada fuera de Aules, o aviso puesto como tarea."""
     ident = html.escape(a["id"])
@@ -1644,7 +1888,7 @@ def asignatura_a_curso(asignatura, cursos):
 
 
 def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, courses=None, materials=None, horario=None,
-                 notas=None, mensajes=None, firma="", practicas=None, foto=""):
+                 notas=None, mensajes=None, firma="", practicas=None, foto="", progreso=None):
     now = datetime.now()
     now_ts = now.timestamp()
     notas = notas or []
@@ -1677,6 +1921,10 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
             pills += f'<span class="pill pill-propia">{icon("pencil", 11)}Era {KIND_LABELS[a["kind_original"]].lower()} en Aules</span>'
         if a.get("is_new"):
             pills += f'<span class="pill pill-new">{icon("sparkles", 12)}Nueva</span>'
+        cambios = ""
+        if a.get("cambios") and not a.get("is_new"):
+            pills += f'<span class="pill pill-cambio">{icon("refresh", 12)}Modificada</span>'
+            cambios = '<ul class="cambios">' + "".join(f"<li>{html.escape(c)}</li>" for c in a["cambios"]) + "</ul>"
         if a["status"]:
             cls, ic = ("pill-done", "check") if a["done"] else ("pill-draft", "pencil")
             pills += f'<span class="pill {cls}">{icon(ic, 12)}{html.escape(a["status"])}</span>'
@@ -1709,12 +1957,12 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
                 "</div>"
             )
         else:
-            extra += _marcas_html(a)
+            extra = _entrega_html(a, now_ts) + extra + _marcas_html(a)
         return (
             f'<article class="{classes}" data-kind="{kind}" data-new="{int(bool(a.get("is_new")))}" data-search="{search}"{extra_attr}>'
             f'<div class="item-main"><div class="item-head">{pills}</div>'
             f'<h3 class="item-title">{html.escape(a["name"])}</h3>'
-            f'{desc}{_files_html(a["attachments"])}{nota_item}{extra}</div>'
+            f'{cambios}{desc}{_files_html(a["attachments"])}{nota_item}{extra}</div>'
             f'{_due_html(a["duedate"], a["due_label"], now_ts)}'
             "</article>"
         )
@@ -1804,6 +2052,7 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
             body += group("Hechas o fuera de plazo", finished)
         if info_items:
             body += group("Avisos sin entrega", info_items)
+        body += _progreso_html((progreso or {}).get(course_name))
         corregidas = sorted((n for n in notas_curso if not n["total"]), key=lambda n: -(n["graded"] or 0))
         if corregidas:
             nuevas = sum(1 for n in corregidas if n.get("is_new"))
@@ -2049,11 +2298,13 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
   {forum_html}
   <div id="empty" class="empty" hidden>{icon("inbox", 40)}<p>No hay nada que mostrar.</p></div>
   {dialogo_propia}
+  {DIALOGO_ENTREGA}
 
   <footer>{icon("clock", 13)}Se actualiza sola cada minuto y medio mientras la app está abierta</footer>
 </div>"""
 
-    return _page("Aules · Resumen", body, REPORT_CSS + PROPIAS_CSS, REPORT_JS + AHORA_JS + REPORT_JS_FIN + PROPIAS_JS)
+    return _page("Aules · Resumen", body, REPORT_CSS + PROPIAS_CSS + ENTREGA_CSS,
+                 REPORT_JS + AHORA_JS + REPORT_JS_FIN + PROPIAS_JS + ENTREGA_JS)
 
 
 def render_login(error="", username="", can_cancel=False):

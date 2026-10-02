@@ -16,7 +16,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import ia
-from interfaz import asignatura_a_curso, build_report
+from interfaz import asignatura_a_curso, build_report, format_due
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASE_URL = "https://aules.edu.gva.es/fp"
@@ -357,8 +357,30 @@ def download_attachments(ctx, course_name, item_name, attachments, raiz="adjunto
                 log(f"No se pudo descargar {filename}: {e}")
                 if not os.path.exists(dest):
                     continue
-        saved.append({"filename": att["filename"], "path": os.path.relpath(dest, ctx.acc_dir).replace(os.sep, "/")})
+        saved.append({"filename": att["filename"], "path": os.path.relpath(dest, ctx.acc_dir).replace(os.sep, "/"),
+                      "timemodified": remote_mtime})
     return saved
+
+
+def config_entrega(a):
+    """Qué admite la entrega de una tarea de Aules: archivos (cuántos, tamaño, tipos), texto, declaración..."""
+    conf = {(c.get("plugin"), c.get("name")): str(c.get("value") or "") for c in a.get("configs") or []
+            if c.get("subtype") == "assignsubmission"}
+    archivos, texto = conf.get(("file", "enabled")) == "1", conf.get(("onlinetext", "enabled")) == "1"
+    if not (archivos or texto):
+        return None
+    return {
+        "archivos": archivos,
+        "max_archivos": int(conf.get(("file", "maxfilesubmissions")) or 1) if archivos else 0,
+        "max_bytes": int(conf.get(("file", "maxsubmissionsizebytes")) or 0),
+        "tipos": conf.get(("file", "filetypeslist"), ""),
+        "texto": texto,
+        "borradores": bool(a.get("submissiondrafts")),
+        "declaracion": html_to_text(a.get("submissionstatement") or "") if a.get("requiresubmissionstatement") else "",
+        # Desde cuándo se puede entregar y la fecha de corte (después ya no se admite nada, salvo prórroga).
+        "desde": int(a.get("allowsubmissionsfromdate") or 0),
+        "corte": int(a.get("cutoffdate") or 0),
+    }
 
 
 def apply_submission_status(ctx, module, assignid, item):
@@ -426,6 +448,9 @@ def fetch_assignments(ctx, module):
                 "done": False,
                 "status": "",
             }
+            config = config_entrega(a)
+            if config:
+                item["entrega"] = config
             admite_entregas = apply_submission_status(ctx, module, a["id"], item)
             # Lo que de verdad distingue una tarea de un apartado administrativo (p.ej. "Resultados
             # de Aprendizaje") es si admite entregas; la fecha o la nota solo valen como respaldo.
@@ -528,12 +553,61 @@ def separar_nota(valor):
     return html.unescape(RE_ETIQUETA.sub("", valor)).strip(), html.unescape(estado.group(1)).strip() if estado else ""
 
 
-def fetch_grades(ctx, courses):
+RE_PORCENTAJE = re.compile(r"\((\d{1,3}(?:[.,]\d+)?)\s*%\)")
+
+
+def progreso_asignatura(elementos):
+    """Cuánto llevas en una asignatura según los pesos de sus notas. None si los pesos no son fiables.
+
+    Los pesos salen de Aules cuando el profe los deja ver y todas las notas cuelgan de la asignatura (sin
+    subcategorías, cuyos pesos suelen estar ocultos). Si no, de porcentajes en el nombre, como «RA 1 (30%)»,
+    pero solo si suman 100 %. Con cualquier otra cosa el cálculo sería inventado, así que no se muestra.
+    """
+    hojas = [g for g in elementos if g.get("itemtype") in ("mod", "manual")]
+    if not hojas:
+        return None
+    if not any(g.get("itemtype") == "category" for g in elementos) and all(g.get("weightraw") is not None for g in hojas):
+        pesos, fuente = {g["id"]: float(g["weightraw"]) for g in hojas}, "aules"
+    else:
+        pesos = {}
+        for g in hojas:
+            m = RE_PORCENTAJE.search(g.get("itemname") or "")
+            if m:
+                pesos[g["id"]] = float(m.group(1).replace(",", ".")) / 100
+        fuente = "nombres"
+        if not 0.98 <= sum(pesos.values()) <= 1.02:
+            return None
+    total = sum(pesos.values())
+    if total <= 0:
+        return None
+    corregido = conseguido = 0.0
+    for g in hojas:
+        peso = pesos.get(g["id"], 0) / total
+        if peso and g.get("graderaw") is not None and g.get("grademax"):
+            corregido += peso
+            conseguido += peso * float(g["graderaw"]) / float(g["grademax"])
+    if corregido < 0.001:
+        return None
+    queda = 1 - corregido
+    return {
+        "fuente": fuente,
+        "media": round(conseguido / corregido * 10, 2),
+        "corregido": round(corregido * 100),
+        # Media que te hace falta en lo que queda para llegar al 5 (puede salir por debajo de 0 o por encima de 10).
+        "necesaria": round((0.5 - conseguido) / queda * 10, 2) if queda > 0.005 else None,
+    }
+
+
+def fetch_grades(ctx, courses, progreso=None):
     """Notas ya puestas (con el comentario del profe) y la nota total de cada asignatura."""
     notas = []
     for c in courses:
         course_name = ctx.course_names.get(c["id"], c.get("fullname", "?"))
         data = ctx.ws("gradereport_user_get_grade_items", {"courseid": c["id"], "userid": ctx.userid})
+        if progreso is not None and data.get("usergrades"):
+            calculo = progreso_asignatura(data["usergrades"][0].get("gradeitems", []))
+            if calculo:
+                progreso[course_name] = calculo
         for usuario in data.get("usergrades", []):
             for g in usuario.get("gradeitems", []):
                 valor, estado = separar_nota(g.get("gradeformatted"))
@@ -961,6 +1035,151 @@ def respuesta_entregada(session, item):
     ctx = Ctx(base_url=session["base_url"], token=session["token"], userid=0, acc_dir=acc_dir, course_names={}, course_params={})
     guardados = download_attachments(ctx, item["course"], item["name"], archivos[:8], raiz="entregas")
     return "\n\n".join(textos), [os.path.join(acc_dir, g["path"]) for g in guardados]
+
+
+class EntregaError(Exception):
+    pass
+
+
+def _tarea_de_aules(item):
+    modulo, _, assignid = item["id"].partition("_")
+    if modulo not in ("assign", "assigngva") or not assignid.isdigit():
+        raise EntregaError("Solo se pueden entregar desde la app las tareas de Aules.")
+    return modulo, int(assignid)
+
+
+def motivo_sin_entrega(item, now_ts):
+    """Por qué no se puede entregar todavía o ya no, según las fechas de la tarea. Vacío si está abierta."""
+    config = item.get("entrega") or {}
+    if config.get("desde") and now_ts < config["desde"]:
+        return f"Se abre el {format_due(config['desde'])}"
+    if config.get("corte") and now_ts > config["corte"] and item.get("due_label") != "Prórroga":
+        return "Plazo cerrado"
+    return ""
+
+
+def estado_entrega(session, item):
+    """Cómo está tu entrega en Aules ahora mismo y si todavía se puede cambiar."""
+    modulo, assignid = _tarea_de_aules(item)
+    st = call_ws(session["base_url"], session["token"], f"mod_{modulo}_get_submission_status", {"assignid": assignid})
+    last = st.get("lastattempt") or {}
+    entrega = last.get("submission") or last.get("teamsubmission") or {}
+    archivos, con_texto = [], False
+    for plugin in entrega.get("plugins") or []:
+        con_texto |= any(html_to_text(c.get("text") or "").strip() for c in plugin.get("editorfields") or [])
+        for area in plugin.get("fileareas") or []:
+            archivos += [f["filename"] for f in area.get("files") or [] if f.get("filename") and f["filename"] != "."]
+    por_fecha = motivo_sin_entrega(item, datetime.now().timestamp())
+    if last.get("locked"):
+        motivo = "El profe ha bloqueado las entregas de esta tarea."
+    elif not last.get("canedit") and por_fecha.startswith("Se abre"):
+        motivo = f"Todavía no se puede entregar: {por_fecha[0].lower()}{por_fecha[1:]}."
+    elif not last.get("canedit") and por_fecha:
+        motivo = "El plazo de entrega ha terminado: Aules ya no admite entregas en esta tarea."
+    elif not last.get("canedit"):
+        motivo = "Aules no admite cambios en esta entrega: puede que esté cerrada o ya corregida."
+    else:
+        motivo = ""
+    return {"puede": not motivo, "motivo": motivo, "estado": entrega.get("status") or "", "archivos": archivos,
+            "texto": con_texto}
+
+
+def _tipo_permitido(nombre, tipos):
+    """Moodle guarda los tipos como ".pdf, .docx" o como grupos ("document"); los grupos se dejan a Aules."""
+    extensiones = [t.strip().lower() for t in re.split(r"[,;\s]+", tipos or "") if t.strip().startswith(".")]
+    return not extensiones or os.path.splitext(nombre.lower())[1] in extensiones
+
+
+def _subir_al_borrador(session, archivos):
+    """Sube los archivos a una zona temporal de tu usuario en Aules y devuelve su número (itemid)."""
+    r = http.post(f"{session['base_url']}/webservice/upload.php",
+                  data={"token": session["token"], "filearea": "draft", "itemid": 0},
+                  files={f"file_{i}": (nombre, datos) for i, (nombre, datos) in enumerate(archivos, 1)}, timeout=300)
+    r.raise_for_status()
+    datos = r.json()
+    if isinstance(datos, dict):
+        raise EntregaError(f"Aules no aceptó los archivos: {datos.get('error') or datos.get('message') or datos}")
+    return int(datos[0]["itemid"])
+
+
+def _zona_vacia(session):
+    return int(call_ws(session["base_url"], session["token"], "core_files_get_unused_draft_itemid")["itemid"])
+
+
+def entregar(session, item, archivos, texto="", acepta_declaracion=False):
+    """Entrega la tarea en Aules con esos archivos [(nombre, bytes)] y/o texto. Sustituye lo entregado antes."""
+    config = item.get("entrega")
+    if not config:
+        raise EntregaError("Esta tarea no admite entregas desde la app. Ábrela en Aules.")
+    modulo, assignid = _tarea_de_aules(item)
+    texto = (texto or "").strip()
+    if not archivos and not texto:
+        raise EntregaError("Elige al menos un archivo" + (" o escribe el texto." if config["texto"] else "."))
+    if archivos and not config["archivos"]:
+        raise EntregaError("Esta tarea no admite archivos, solo texto.")
+    if texto and not config["texto"]:
+        raise EntregaError("Esta tarea no admite texto, solo archivos.")
+    if len(archivos) > config["max_archivos"]:
+        raise EntregaError(f"Esta tarea admite como mucho {config['max_archivos']} archivo(s).")
+    for nombre, datos in archivos:
+        if config["max_bytes"] and len(datos) > config["max_bytes"]:
+            raise EntregaError(f"«{nombre}» pasa del máximo de {config['max_bytes'] // (1024 * 1024)} MB por archivo.")
+        if not _tipo_permitido(nombre, config["tipos"]):
+            raise EntregaError(f"«{nombre}» no es de un tipo permitido ({config['tipos']}).")
+    if config["declaracion"] and not acepta_declaracion:
+        raise EntregaError("Tienes que aceptar la declaración de autoría de la entrega.")
+    # Justo antes de entregar se vuelve a mirar en Aules: la tarea pudo cerrarse desde que abriste el diálogo.
+    estado = estado_entrega(session, item)
+    if not estado["puede"]:
+        raise EntregaError(estado["motivo"])
+
+    datos_entrega = {"assignmentid": assignid}
+    if config["archivos"]:
+        # La zona de archivos se sustituye entera: sin archivos nuevos, se manda vacía.
+        datos_entrega["plugindata[files_filemanager]"] = _subir_al_borrador(session, archivos) if archivos else _zona_vacia(session)
+    if config["texto"]:
+        datos_entrega["plugindata[onlinetext_editor][text]"] = html.escape(texto).replace("\n", "<br>")
+        datos_entrega["plugindata[onlinetext_editor][format]"] = 1
+        datos_entrega["plugindata[onlinetext_editor][itemid]"] = _zona_vacia(session)
+    avisos = call_ws(session["base_url"], session["token"], f"mod_{modulo}_save_submission", datos_entrega)
+    if avisos:
+        raise EntregaError("Aules no aceptó la entrega: " + "; ".join(a.get("item") or a.get("message") or str(a) for a in avisos))
+    if config["borradores"]:
+        avisos = call_ws(session["base_url"], session["token"], f"mod_{modulo}_submit_for_grading",
+                         {"assignmentid": assignid, "acceptsubmissionstatement": int(bool(acepta_declaracion))})
+        if avisos:
+            raise EntregaError("Se guardó como borrador, pero Aules no la envió para calificar: "
+                               + "; ".join(a.get("item") or a.get("message") or str(a) for a in avisos))
+
+    final = estado_entrega(session, item)
+    if final["estado"] != "submitted":
+        raise EntregaError("Aules no confirma la entrega. Ábrela en Aules para comprobarlo.")
+    log(f"Entregada desde la app: {item['name']} ({len(archivos)} archivo(s){', con texto' if texto else ''})")
+    _marcar_entregada(session, item["id"])
+    return final
+
+
+def _marcar_entregada(session, item_id):
+    """Pone la tarea como entregada al momento, sin esperar a la siguiente comprobación."""
+    acc_dir = account_dir(session["username"])
+    items = _load_aules_items(acc_dir)
+    for a in items:
+        if a["id"] == item_id:
+            a.update(done=True, status="Entregada", is_new=False, cambios=[])
+    write_atomic(os.path.join(acc_dir, "items.json"), json.dumps(items, ensure_ascii=False, indent=2))
+    escribir_informe(session)
+
+
+def archivos_del_borrador(cache_ia, item):
+    """Los archivos que te escribió la IA para esa tarea, tal como están ahora en su carpeta (con tus cambios)."""
+    borrador = (cache_ia.get(item["id"]) or {}).get("borrador") or {}
+    carpeta = borrador.get("carpeta") or ""
+    rutas = []
+    for nombre in borrador.get("archivos") or []:
+        ruta = os.path.join(carpeta, os.path.basename(nombre))
+        if carpeta and os.path.isfile(ruta):
+            rutas.append(ruta)
+    return rutas
 
 
 def respuesta_previa(session, previa, cache_ia):
@@ -1643,6 +1862,64 @@ def mark_new_items(state, items, now_ts, first_sync):
     return new_items
 
 
+def _firma_item(a):
+    """Lo que, si cambia, merece un aviso: la fecha, la descripción del profe y los archivos adjuntos."""
+    return {
+        "fecha": int(a.get("duedate") or 0),
+        "etiqueta": a.get("due_label") or "",
+        "texto": hashlib.sha1(" ".join((a.get("summary") or "").split()).encode("utf-8")).hexdigest()[:12],
+        "adjuntos": {f["filename"]: int(f.get("timemodified") or 0) for f in a.get("attachments") or []},
+    }
+
+
+def describir_cambios(antes, ahora):
+    cambios = []
+    # Un cuestionario pasa de «Abre» a «Cierra» al abrirse: su fecha cambia sin que el profe toque nada.
+    if antes["fecha"] != ahora["fecha"] and {antes["etiqueta"], ahora["etiqueta"]} != {"Abre", "Cierra"}:
+        if not ahora["fecha"]:
+            cambios.append("Ya no tiene fecha límite")
+        elif not antes["fecha"]:
+            cambios.append(f"Ahora tiene fecha: {format_due(ahora['fecha'])}")
+        elif ahora["etiqueta"] == "Prórroga" and antes["etiqueta"] != "Prórroga":
+            cambios.append(f"Tienes prórroga hasta el {format_due(ahora['fecha'])}")
+        else:
+            sentido = "se adelanta" if ahora["fecha"] < antes["fecha"] else "se retrasa"
+            cambios.append(f"La fecha {sentido}: del {format_due(antes['fecha'])} al {format_due(ahora['fecha'])}")
+    if antes["texto"] != ahora["texto"]:
+        cambios.append("El profe ha cambiado la descripción")
+    adjuntos_antes = antes.get("adjuntos", {})
+    for nombre, fecha in ahora["adjuntos"].items():
+        if nombre not in adjuntos_antes:
+            cambios.append(f"Archivo nuevo: {nombre}")
+        elif fecha and adjuntos_antes[nombre] and fecha != adjuntos_antes[nombre]:
+            cambios.append(f"Archivo actualizado: {nombre}")
+    cambios += [f"Ya no está el archivo: {nombre}" for nombre in adjuntos_antes if nombre not in ahora["adjuntos"]]
+    return cambios
+
+
+def mark_changed_items(state, items, now_ts):
+    """Compara cada tarea con cómo era en la comprobación anterior. Devuelve las que el profe ha cambiado."""
+    firmas = state.setdefault("items_firma", {})
+    recientes = state.setdefault("items_cambios", {})
+    cambiadas = []
+    for a in items:
+        ahora, antes = _firma_item(a), firmas.get(a["id"])
+        firmas[a["id"]] = ahora
+        # La primera vez que se ve una tarea (o tras actualizar a esta versión) solo se guarda cómo es.
+        if antes is None or a["kind"] == "aviso" or a["done"]:
+            continue
+        cambios = describir_cambios(antes, ahora)
+        if cambios:
+            previos = recientes.get(a["id"], {}).get("cambios", [])
+            recientes[a["id"]] = {"ts": now_ts, "cambios": previos + [c for c in cambios if c not in previos]}
+            cambiadas.append(dict(a, cambios=cambios))
+    for clave in [c for c, v in recientes.items() if now_ts - v["ts"] > NEW_BADGE_SECONDS]:
+        del recientes[clave]
+    for a in items:
+        a["cambios"] = [] if a["done"] else recientes.get(a["id"], {}).get("cambios", [])
+    return cambiadas
+
+
 def mark_new_posts(state, posts, now_ts, first_sync, userid):
     baseline = first_sync or "forum" not in state
     last_seen = state.setdefault("forum", {})
@@ -1766,7 +2043,7 @@ def _plural(n, singular, plural):
 
 
 def send_notifications(username, new_items, exam_reminders, new_posts, new_materials=(), task_reminders=(),
-                       new_grades=(), new_messages=(), summary=None, new_practices=()):
+                       new_grades=(), new_messages=(), summary=None, new_practices=(), changed_items=()):
     new_exams = [a for a in new_items if a["kind"] == "examen"]
     new_tasks = [a for a in new_items if a["kind"] == "tarea"]
     if new_exams:
@@ -1785,6 +2062,13 @@ def send_notifications(username, new_items, exam_reminders, new_posts, new_mater
     if new_tasks:
         log(f"{len(new_tasks)} tarea(s) nueva(s): " + ", ".join(a["name"] for a in new_tasks))
         notify(f"Aules: {len(new_tasks)} tarea(s) nueva(s)", new_tasks)
+    if changed_items:
+        log("Tarea(s) modificada(s): " + "; ".join(f"{a['name']} ({', '.join(a['cambios'])})" for a in changed_items))
+        if len(changed_items) == 1:
+            a = changed_items[0]
+            toast(f"Cambio en «{a['name']}»", f"{a['course']}: " + ". ".join(a["cambios"]), 30)
+        else:
+            notify(f"Aules: {len(changed_items)} tareas modificadas", changed_items, timeout=30)
     if new_grades:
         log(f"{len(new_grades)} nota(s) nueva(s): " + ", ".join(f"{n['name']} ({n['grade']})" for n in new_grades))
         if len(new_grades) == 1:
@@ -1850,7 +2134,8 @@ def run_check(session):
     items += ctx.optional("tareas GVA", lambda: fetch_assignments(ctx, "assigngva")) or []
     items += ctx.optional("cuestionarios", lambda: fetch_quizzes(ctx)) or []
     posts = ctx.optional("foros", lambda: fetch_forum_posts(ctx))
-    notas = ctx.optional("notas", lambda: fetch_grades(ctx, courses))
+    progreso = {}
+    notas = ctx.optional("notas", lambda: fetch_grades(ctx, courses, progreso))
     mensajes = ctx.optional("mensajes", lambda: fetch_messages(ctx))
     materiales = practicas = None
     if (first_sync or now_ts - state.get("materiales_ts", 0) >= MATERIALS_EVERY_SECONDS
@@ -1879,6 +2164,7 @@ def run_check(session):
                 write_atomic(os.path.join(acc_dir, "profesores.json"), json.dumps(profesores, ensure_ascii=False, indent=2))
 
     new_items = mark_new_items(state, items, now_ts, first_sync)
+    changed_items = mark_changed_items(state, items, now_ts)
     new_posts = mark_new_posts(state, posts, now_ts, first_sync, ctx.userid) if posts is not None else []
     new_materials = mark_new_materials(state, materiales, now_ts, first_sync) if materiales is not None else []
     new_practices = mark_new_materials(state, practicas, now_ts, first_sync, "practicas") if practicas is not None else []
@@ -1904,6 +2190,8 @@ def run_check(session):
     if practicas is None:
         practicas = _load_json_list(session, "practicas.json")
 
+    if notas is not None:
+        write_atomic(os.path.join(acc_dir, "progreso.json"), json.dumps(progreso, ensure_ascii=False, indent=2))
     for nombre, datos in (("items.json", items), ("posts.json", posts), ("notas.json", notas),
                           ("mensajes.json", mensajes), ("materiales.json", materiales), ("practicas.json", practicas)):
         write_atomic(os.path.join(acc_dir, nombre), json.dumps(datos, ensure_ascii=False, indent=2))
@@ -1911,7 +2199,7 @@ def run_check(session):
     escribir_informe(session, ctx.warnings, [c["fullname"] for c in courses], int(now_ts))
     save_state(acc_dir, state)
     send_notifications(session["username"], new_items, exam_reminders, new_posts, new_materials,
-                       task_reminders, new_grades, new_messages, summary, new_practices)
+                       task_reminders, new_grades, new_messages, summary, new_practices, changed_items)
 
 
 def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
@@ -1930,15 +2218,20 @@ def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
         horario = dict(horario, no_lectivos=sin_clase)
 
     foto = version_foto(session)
+    try:
+        with open(os.path.join(acc_dir, "progreso.json"), "r", encoding="utf-8") as f:
+            progreso = json.load(f)
+    except (OSError, ValueError):
+        progreso = {}
     # Huella del contenido: la página solo se recarga sola cuando cambia algo de verdad.
     firma = hashlib.sha1(
-        json.dumps([items, posts, notas, mensajes, materiales, practicas, warnings, sin_clase, foto], sort_keys=True,
+        json.dumps([items, posts, notas, mensajes, materiales, practicas, warnings, sin_clase, foto, progreso], sort_keys=True,
                    ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
     write_atomic(
         report_path(session),
         build_report(items, posts, session, warnings, EXAM_REMINDER_HOURS[0], ia.cargar_cache(acc_dir), cursos,
-                     materiales, horario, notas, mensajes, firma, practicas, foto),
+                     materiales, horario, notas, mensajes, firma, practicas, foto, progreso),
     )
     write_atomic(
         os.path.join(acc_dir, "estado.json"),

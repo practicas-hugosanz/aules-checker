@@ -16,7 +16,7 @@ import time
 
 import requests
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 # Usuario y repositorio de GitHub de donde salen las versiones nuevas.
 REPO = "practicas-hugosanz/aules-checker"
 RAMA = "main"

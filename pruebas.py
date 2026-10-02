@@ -171,6 +171,212 @@ class AvisoDeNuevo(unittest.TestCase):
         self.assertEqual({i["id"]: i["is_new"] for i in items}, {"vieja": False, "reciente": True, "nueva": True})
 
 
+class TareasModificadas(unittest.TestCase):
+    def tarea(self, **cambios):
+        return dict({"id": "assign_1", "name": "Práctica 1", "course": "Redes", "kind": "tarea", "done": False, "status": "",
+                     "duedate": 1_790_000_000, "due_label": "Entrega", "summary": "Haz la práctica.",
+                     "attachments": [{"filename": "enunciado.pdf", "path": "x", "timemodified": 100}]}, **cambios)
+
+    def comprobar(self, estado, tarea, ahora=1_000_000):
+        items = [tarea]
+        return core.mark_changed_items(estado, items, ahora), items[0]
+
+    def test_la_primera_vez_no_avisa(self):
+        cambiadas, tarea = self.comprobar({}, self.tarea())
+        self.assertEqual((cambiadas, tarea["cambios"]), ([], []))
+
+    def test_avisa_de_fecha_descripcion_y_archivos(self):
+        estado = {}
+        self.comprobar(estado, self.tarea())
+        nueva = self.tarea(duedate=1_790_000_000 + 4 * 86400, summary="Haz la práctica y la memoria.",
+                           attachments=[{"filename": "enunciado.pdf", "path": "x", "timemodified": 200},
+                                        {"filename": "datos.pkt", "path": "y", "timemodified": 1}])
+        cambiadas, tarea = self.comprobar(estado, nueva)
+        self.assertEqual(len(cambiadas), 1)
+        texto = " | ".join(tarea["cambios"])
+        self.assertIn("La fecha se retrasa", texto)
+        self.assertIn("El profe ha cambiado la descripción", texto)
+        self.assertIn("Archivo actualizado: enunciado.pdf", texto)
+        self.assertIn("Archivo nuevo: datos.pkt", texto)
+        pagina = interfaz.build_report([tarea], [], {"username": "prueba"}, [], 48)
+        self.assertIn("Modificada", pagina)
+        self.assertIn("La fecha se retrasa", pagina)
+
+    def test_prorroga(self):
+        estado = {}
+        self.comprobar(estado, self.tarea())
+        _, tarea = self.comprobar(estado, self.tarea(duedate=1_790_500_000, due_label="Prórroga"))
+        self.assertTrue(tarea["cambios"][0].startswith("Tienes prórroga hasta"))
+
+    def test_un_cuestionario_que_se_abre_no_es_un_cambio(self):
+        estado = {}
+        self.comprobar(estado, self.tarea(kind="examen", due_label="Abre", duedate=1_790_000_000))
+        cambiadas, _ = self.comprobar(estado, self.tarea(kind="examen", due_label="Cierra", duedate=1_790_003_600))
+        self.assertEqual(cambiadas, [])
+
+    def test_ni_tareas_entregadas_ni_espacios_de_mas(self):
+        estado = {}
+        self.comprobar(estado, self.tarea())
+        self.assertEqual(self.comprobar(estado, self.tarea(summary="  Haz   la práctica. "))[0], [])
+        self.assertEqual(self.comprobar(estado, self.tarea(done=True, duedate=1))[0], [])
+
+    def test_el_aviso_dura_24_horas(self):
+        estado = {}
+        self.comprobar(estado, self.tarea(), ahora=1_000_000)
+        self.comprobar(estado, self.tarea(duedate=1), ahora=1_000_000)
+        self.assertTrue(self.comprobar(estado, self.tarea(duedate=1), ahora=1_000_000 + 23 * 3600)[1]["cambios"])
+        self.assertEqual(self.comprobar(estado, self.tarea(duedate=1), ahora=1_000_000 + 25 * 3600)[1]["cambios"], [])
+
+
+class EntregarDesdeLaApp(unittest.TestCase):
+    """Con Aules simulado: estas pruebas nunca entregan nada de verdad."""
+
+    def setUp(self):
+        self.carpeta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        for parche in (mock.patch.object(core, "ACCOUNTS_DIR", self.carpeta), mock.patch.object(core, "escribir_informe"),
+                       mock.patch.object(core, "log")):
+            parche.start()
+            self.addCleanup(parche.stop)
+        self.sesion = {"username": "prueba", "token": "x", "base_url": "https://aules.test/fp"}
+        os.makedirs(core.account_dir("prueba"))
+        self.tarea = {"id": "assign_7", "name": "Práctica 1", "course": "Bases de datos", "kind": "tarea", "done": False,
+                      "status": "", "entrega": core.config_entrega({"configs": [
+                          {"subtype": "assignsubmission", "plugin": "file", "name": "enabled", "value": "1"},
+                          {"subtype": "assignsubmission", "plugin": "file", "name": "maxfilesubmissions", "value": "2"},
+                          {"subtype": "assignsubmission", "plugin": "file", "name": "maxsubmissionsizebytes", "value": "1000"},
+                          {"subtype": "assignsubmission", "plugin": "file", "name": "filetypeslist", "value": ".sql, .pdf"}]})}
+        with open(os.path.join(core.account_dir("prueba"), "items.json"), "w", encoding="utf-8") as f:
+            f.write(core.json.dumps([self.tarea]))
+        self.llamadas = []
+        self.puede_editar, self.estado_final, self.avisos = True, "submitted", []
+
+    def aules(self, base, token, funcion, params=None):
+        self.llamadas.append((funcion, params))
+        if funcion.endswith("get_submission_status"):
+            ya_entregada = any(f.endswith("save_submission") for f, _ in self.llamadas)
+            return {"lastattempt": {"canedit": self.puede_editar, "submission": {
+                "status": self.estado_final if ya_entregada else "new", "plugins": []}}}
+        if funcion.endswith("save_submission"):
+            return self.avisos
+        if funcion == "core_files_get_unused_draft_itemid":
+            return {"itemid": 555}
+        raise AssertionError(funcion)
+
+    def entregar(self, archivos, **extra):
+        subida = mock.Mock(json=lambda: [{"itemid": 4321, "filename": n} for n, _ in archivos], raise_for_status=lambda: None)
+        with mock.patch.object(core, "call_ws", side_effect=self.aules), mock.patch.object(core.http, "post", return_value=subida) as post:
+            resultado = core.entregar(self.sesion, self.tarea, archivos, **extra)
+        return resultado, post
+
+    def test_lee_lo_que_admite_la_tarea(self):
+        self.assertEqual(self.tarea["entrega"], {"archivos": True, "max_archivos": 2, "max_bytes": 1000, "tipos": ".sql, .pdf",
+                                                 "texto": False, "borradores": False, "declaracion": "", "desde": 0, "corte": 0})
+        self.assertIsNone(core.config_entrega({"configs": []}))
+
+    def test_entrega_y_marca_como_entregada(self):
+        _, post = self.entregar([("consultas.sql", b"SELECT 1;")])
+        self.assertTrue(post.call_args[0][0].endswith("/webservice/upload.php"))
+        guardar = next(p for f, p in self.llamadas if f == "mod_assign_save_submission")
+        self.assertEqual(guardar, {"assignmentid": 7, "plugindata[files_filemanager]": 4321})
+        items = core._load_aules_items(core.account_dir("prueba"))
+        self.assertEqual((items[0]["done"], items[0]["status"]), (True, "Entregada"))
+
+    def test_comprueba_los_limites_antes_de_subir_nada(self):
+        casos = [([], "al menos un archivo"), ([("a.sql", b"1")] * 3, "como mucho 2"),
+                 ([("grande.sql", b"x" * 2000)], "máximo"), ([("foto.png", b"1")], "tipo permitido")]
+        for archivos, mensaje in casos:
+            self.llamadas.clear()
+            with self.assertRaisesRegex(core.EntregaError, mensaje):
+                self.entregar(archivos)
+            self.assertEqual(self.llamadas, [])
+
+    def test_no_entrega_si_aules_ya_no_admite_cambios(self):
+        self.puede_editar = False
+        with self.assertRaisesRegex(core.EntregaError, "no admite cambios"):
+            self.entregar([("a.sql", b"1")])
+        self.assertFalse(any(f.endswith("save_submission") for f, _ in self.llamadas))
+        # Con las fechas de la tarea, el motivo es concreto.
+        self.tarea["entrega"]["desde"] = int(time.time()) + 3 * 86400
+        with self.assertRaisesRegex(core.EntregaError, "Todavía no se puede entregar: se abre el"):
+            self.entregar([("a.sql", b"1")])
+        self.tarea["entrega"].update(desde=0, corte=int(time.time()) - 86400)
+        with self.assertRaisesRegex(core.EntregaError, "El plazo de entrega ha terminado"):
+            self.entregar([("a.sql", b"1")])
+
+    def test_boton_segun_las_fechas(self):
+        ahora = int(time.time())
+        boton = lambda **cambios: sin_etiquetas(interfaz._entrega_html(dict(self.tarea, entrega=dict(self.tarea["entrega"], **cambios)), ahora))
+        self.assertEqual(boton(), "Entregar")
+        self.assertIn("Se podrá entregar desde el", boton(desde=ahora + 86400))
+        self.assertEqual(boton(corte=ahora - 60), "Plazo de entrega cerrado")
+        self.assertEqual(sin_etiquetas(interfaz._entrega_html(dict(self.tarea, done=True, status="Entregada"), ahora)), "Cambiar la entrega")
+        self.assertEqual(interfaz._entrega_html(dict(self.tarea, done=True, status="Calificada · 9"), ahora), "")
+
+    def test_avisa_si_aules_rechaza_o_no_confirma(self):
+        self.avisos = [{"item": "Fuera de plazo"}]
+        with self.assertRaisesRegex(core.EntregaError, "Fuera de plazo"):
+            self.entregar([("a.sql", b"1")])
+        self.avisos, self.estado_final, self.llamadas = [], "draft", []
+        with self.assertRaisesRegex(core.EntregaError, "no confirma"):
+            self.entregar([("a.sql", b"1")])
+
+    def test_solo_texto_y_declaracion(self):
+        self.tarea["entrega"].update(archivos=False, max_archivos=0, texto=True, declaracion="Este trabajo es mío.")
+        with self.assertRaisesRegex(core.EntregaError, "declaración"):
+            self.entregar([], texto="Mi respuesta")
+        self.llamadas.clear()
+        self.entregar([], texto="Línea 1\n<b>Línea 2</b>", acepta_declaracion=True)
+        guardar = next(p for f, p in self.llamadas if f == "mod_assign_save_submission")
+        self.assertEqual(guardar["plugindata[onlinetext_editor][text]"], "Línea 1<br>&lt;b&gt;Línea 2&lt;/b&gt;")
+
+    def test_los_archivos_del_borrador_no_salen_de_su_carpeta(self):
+        carpeta = os.path.join(self.carpeta, "borrador")
+        os.makedirs(carpeta)
+        with open(os.path.join(carpeta, "respuesta.sql"), "w") as f:
+            f.write("SELECT 1;")
+        cache = {"assign_7": {"borrador": {"carpeta": carpeta, "archivos": ["respuesta.sql", "../items.json", "falta.sql"]}}}
+        self.assertEqual(core.archivos_del_borrador(cache, self.tarea), [os.path.join(carpeta, "respuesta.sql")])
+
+
+class CuantoLlevo(unittest.TestCase):
+    def nota(self, nombre, nota=None, maximo=10, peso=None, tipo="mod", id_=None):
+        return {"id": id_ or nombre, "itemtype": tipo, "itemname": nombre, "graderaw": nota, "grademax": maximo, "weightraw": peso}
+
+    def test_con_los_pesos_de_aules(self):
+        # Implantación: cuatro baterías al 25 % y las prácticas al 0 %.
+        notas = [self.nota(f"B{i}", n, peso=0.25) for i, n in enumerate((9.25, 9.0625, 10, 8.5))] + [self.nota("Práctica", None, 2, 0)]
+        p = core.progreso_asignatura(notas)
+        self.assertEqual((p["fuente"], p["media"], p["corregido"], p["necesaria"]), ("aules", 9.2, 100, None))
+        self.assertIn("Ya está corregido todo", sin_etiquetas(interfaz._progreso_html(p)))
+
+    def test_con_porcentajes_en_el_nombre_y_lo_que_falta(self):
+        # IPO: «RA 1 (30%)» sobre 3, «RA 3 (40%)» sobre 4…; la tarea sin porcentaje no cuenta.
+        notas = [self.nota("RA 1 (30%) PRL", 1.2, 3), self.nota("RA 2 (10%)", None, 1), self.nota("RA 3 (40%) Derecho", None, 4),
+                 self.nota("RA 4 (10%)", None, 1), self.nota("RA 5 (10%)", None, 1), self.nota("Documental", 90, 100)]
+        p = core.progreso_asignatura(notas)
+        self.assertEqual((p["fuente"], p["media"], p["corregido"]), ("nombres", 4, 30))
+        self.assertAlmostEqual(p["necesaria"], 5.43, places=2)  # (0,5 - 0,12) / 0,7
+        texto = sin_etiquetas(interfaz._progreso_html(p))
+        self.assertIn("Para llegar al 5 te hace falta sacar 5,43", texto)
+        self.assertIn("cada RA por separado", texto)
+
+    def test_ya_aprobado_o_imposible(self):
+        bien = core.progreso_asignatura([self.nota("A (60%)", 10), self.nota("B (40%)")])
+        self.assertIn("ya tienes el 5", sin_etiquetas(interfaz._progreso_html(bien)))
+        mal = core.progreso_asignatura([self.nota("A (80%)", 0), self.nota("B (20%)")])
+        self.assertIn("ya no se llega al 5", sin_etiquetas(interfaz._progreso_html(mal)))
+
+    def test_sin_pesos_fiables_no_se_inventa(self):
+        sin_pesos = [self.nota("Práctica 1", 8)]
+        con_subcategorias = [self.nota("Unidad 1", tipo="category", peso=0.7), self.nota("Quiz", 85, 100, peso=None)]
+        no_suman_100 = [self.nota("A (30%)", 8), self.nota("B (30%)")]
+        sin_corregir = [self.nota("A (50%)"), self.nota("B (50%)")]
+        for notas in (sin_pesos, con_subcategorias, no_suman_100, sin_corregir, []):
+            self.assertIsNone(core.progreso_asignatura(notas))
+        self.assertEqual(interfaz._progreso_html(None), "")
+
+
 class Temas(unittest.TestCase):
     def test_todos_los_temas_generan_su_css(self):
         for clave, tema in temas.TEMAS.items():

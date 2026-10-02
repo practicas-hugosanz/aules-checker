@@ -1,18 +1,17 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "cambios": [
-    "Las actualizaciones se prueban antes de instalarse: si la versión nueva no arranca en tu ordenador, no se instala y tu app sigue igual",
-    "Si una actualización falla al reiniciar, la app vuelve sola a la versión anterior",
-    "Más rápida: los enunciados en PDF ya no se releen en cada comprobación",
-    "Los títulos numerados de los PDF (Ejercicio 5, Ejercicio 6…) ya no se borran por confundirlos con la cabecera"
+    "Aviso cuando un profe cambia una tarea (fecha, prórroga, descripción o archivos), y la tarea sale como «Modificada» durante 24 horas con la lista de cambios",
+    "Entregar las tareas desde la app: eliges archivos (o los de tu borrador con IA), ves un resumen y confirmas. Avisa si sustituye una entrega anterior y te dice cuándo se abre o si el plazo está cerrado",
+    "«¿Cuánto llevo?» en cada asignatura: tu media en lo corregido y lo que te falta para el 5, solo cuando los pesos de las notas son fiables"
   ],
   "archivos": {
-    "aules_checker.py": "eaeac4c4c0b52fe126b59e9a61a6a846f7bf2ffc94581b2b92326c4939c2aa9e",
-    "servidor.py": "d902683a87180943b29603c4a3ae977feeb6a3a08e65090905dfbe66b53782da",
-    "interfaz.py": "b23a82991aa29262e0d5511e9a00ded964b33585112bbcbe003abf6290df291b",
+    "aules_checker.py": "9657339719543ff40c8ccf8541028daae4fb96d0d101b56d7f2314e4bec80c83",
+    "servidor.py": "727cb23e1ed285b548493f6b2a961fad80e9082b202e6f5203ef2a33642faba2",
+    "interfaz.py": "529443c774c92bf2d6089cd343d0a7583f1c1085bdf8709a2cd6372d0d98436d",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
     "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
-    "actualizador.py": "d4ceb55c7f90968cb5213e366ef6c1c3ec769b857501d4f327ed4634a3c43c9d",
+    "actualizador.py": "cad6298c7b3782adf9b0ace5a685ade3a4c3bce1f31b8355c8c26dd695b7d26f",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }
