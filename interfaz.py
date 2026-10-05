@@ -230,6 +230,7 @@ details[open] > summary > .chev-down { transform: rotate(180deg); }
 .warn { display: flex; gap: 10px; align-items: flex-start; background: var(--amber-soft); color: var(--amber); border-radius: 12px;
   padding: 10px 14px; font-size: 13.5px; margin-bottom: 16px; }
 .warn .i { margin-top: 2px; }
+.warn[hidden] { display: none; }
 .aviso-version { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; background: var(--card); border: 1px solid var(--border);
   box-shadow: inset 4px 0 0 var(--accent), var(--shadow); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; font-size: 13.5px; }
 .aviso-version[hidden] { display: none; }
@@ -858,6 +859,14 @@ REPORT_JS_FIN = """
       if (r.url.indexOf('/login') !== -1) { location.href = '/login'; return; }
       if (!r.ok) return;
       var d = await r.json();
+      revisando = !!d.comprobando;
+      setLoading(revisando);
+      // Si la última revisión falló (sin conexión), se avisa; lo que se ve es lo último guardado.
+      var fallo = document.getElementById('aviso-revision');
+      if (fallo) {
+        fallo.hidden = !d.error || revisando;
+        fallo.lastElementChild.textContent = (d.error || '') + ' Se muestra lo último guardado.';
+      }
       if (d.actualizado && up) {
         up.setAttribute('data-ts', d.actualizado);
         var abs = document.getElementById('updated-abs'), f = new Date(d.actualizado * 1000);
@@ -870,7 +879,13 @@ REPORT_JS_FIN = """
       }
     } catch (e) {}
   }
-  if (informe) setInterval(vigilar, 20000);
+  // Mientras se revisa Aules se mira cada 3 s, para enseñar los datos nuevos en cuanto llegan; si no, cada 20 s.
+  var revisando = false;
+  async function ciclo() {
+    await vigilar();
+    setTimeout(ciclo, revisando ? 3000 : 20000);
+  }
+  if (informe) ciclo();
   try {
     var y = sessionStorage.getItem('aules-scroll');
     if (y !== null) { sessionStorage.removeItem('aules-scroll'); window.scrollTo(0, +y); }
@@ -2295,6 +2310,7 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
   </div>
 
   <div class="aviso-version" id="aviso-version" role="status" hidden></div>
+  <div class="warn" id="aviso-revision" role="status" hidden>{icon("triangle-alert")}<span></span></div>
   {warn_html}
 
   <div class="stats">
@@ -3125,6 +3141,48 @@ def render_ajustes(ajustes, proveedores, error="", correcto="", seccion="aparien
   </div>
 </div>"""
     return _page("Aules · Ajustes", body, LOGIN_CSS + AJUSTES_CSS + APARIENCIA_CSS, AJUSTES_JS + APARIENCIA_JS + PESTANAS_AJUSTES_JS)
+
+
+def render_preparando(error=""):
+    """La primera vez con una cuenta, mientras se lee todo de Aules: en vez de dejar el navegador colgado."""
+    if error:
+        estado = (
+            f'<div class="alert" role="alert">{icon("alert-circle")}<span>{html.escape(error)}</span></div>'
+            f'<form method="post" action="/refresh"><button class="btn-primary" type="submit">{icon("refresh", 18)}Reintentar</button></form>'
+        )
+    else:
+        estado = (
+            f'<p class="preparando" role="status">{icon("loader", 18, "spin")}<span>Leyendo tus tareas, notas y mensajes de Aules…</span></p>'
+            '<p class="auth-sub">La primera vez tarda unos segundos. Las siguientes entrarás al momento.</p>'
+        )
+    body = f"""<div class="auth">
+  <div class="auth-card">
+    <div class="brand"><span class="brand-mark">{icon("book-open", 20)}</span>Aules · Resumen</div>
+    <h1>Preparando tu resumen</h1>
+    {estado}
+    <form method="post" action="/logout"><button class="btn-link" type="submit">{icon("log-out", 14)}Cerrar sesión</button></form>
+  </div>
+</div>"""
+    css = """
+.preparando { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; font-weight: 550; }
+.preparando .i { color: var(--accent); }
+"""
+    # Mira cada segundo y medio si ya está: entonces (o si falló, para enseñar el error) recarga.
+    js = "" if error else """
+(function () {
+  async function mirar() {
+    try {
+      var r = await fetch('/api/informe', { cache: 'no-store' });
+      if (r.url.indexOf('/login') !== -1) { location.href = '/login'; return; }
+      var d = await r.json();
+      if (d.actualizado || (d.error && !d.comprobando)) { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(mirar, 1500);
+  }
+  setTimeout(mirar, 1500);
+})();
+"""
+    return _page("Aules · Preparando", body, LOGIN_CSS + css, js)
 
 
 def render_error(message):

@@ -6,8 +6,10 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import uuid
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as hora_del_dia, timedelta
 
@@ -43,8 +45,23 @@ http = requests.Session()
 # Reintenta cortes de red y errores 502/503/504 puntuales de Aules (solo son consultas).
 http.mount(
     "https://",
-    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=(502, 503, 504), allowed_methods=None)),
+    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=(502, 503, 504), allowed_methods=None),
+                pool_maxsize=12),
 )
+# Las consultas van en paralelo (Aules tarda lo mismo en una que en varias a la vez), pero nunca más de
+# estas a la vez, para no saturar el servidor del instituto.
+CONSULTAS_A_LA_VEZ = 8
+_limite_aules = threading.BoundedSemaphore(CONSULTAS_A_LA_VEZ)
+_log_lock = threading.Lock()
+
+
+def en_paralelo(funcion, elementos):
+    """Como map(), pero a la vez. Devuelve los resultados en el mismo orden; si una falla, lanza su error."""
+    elementos = list(elementos)
+    if len(elementos) <= 1:
+        return [funcion(e) for e in elementos]
+    with ThreadPoolExecutor(min(CONSULTAS_A_LA_VEZ, len(elementos))) as ex:
+        return list(ex.map(funcion, elementos))
 
 
 class LoginError(Exception):
@@ -66,7 +83,7 @@ def write_atomic(path, content):
 def log(message):
     line = f"{datetime.now().isoformat(timespec='seconds')} {message}"
     print(line)
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
+    with _log_lock, open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
     try:
         if os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
@@ -216,7 +233,8 @@ def call_ws(base_url, token, wsfunction, params=None):
     payload = {"wstoken": token, "wsfunction": wsfunction, "moodlewsrestformat": "json"}
     if params:
         payload.update(params)
-    r = http.post(f"{base_url}/webservice/rest/server.php", data=payload, timeout=30)
+    with _limite_aules:
+        r = http.post(f"{base_url}/webservice/rest/server.php", data=payload, timeout=30)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict) and data.get("exception"):
@@ -428,13 +446,28 @@ def apply_submission_status(ctx, module, assignid, item):
 ENUNCIADO_MAX_CHARS = 20_000
 
 
+_enunciados_leidos = {}
+
+
+def _texto_enunciado(ruta):
+    """Leer un PDF o Word cuesta (unos 2 s en cada revisión): se guarda ya leído y solo se relee si el archivo cambia."""
+    try:
+        info = os.stat(ruta)
+    except OSError:
+        return ia.extraer_texto(ruta, ENUNCIADO_MAX_CHARS + 1)
+    clave = (ruta, info.st_mtime_ns, info.st_size)
+    if clave not in _enunciados_leidos:
+        _enunciados_leidos[clave] = ia.extraer_texto(ruta, ENUNCIADO_MAX_CHARS + 1)
+    return _enunciados_leidos[clave]
+
+
 def leer_enunciado_de_archivos(ctx, item):
     """Muchos profes dejan el enunciado dentro del PDF o Word adjunto, no en la descripción."""
     if item["summary"] or not item["attachments"]:
         return
     for adjunto in item["attachments"][:2]:
         ruta = os.path.join(ctx.acc_dir, adjunto["path"])
-        texto = ia.extraer_texto(ruta, ENUNCIADO_MAX_CHARS + 1)
+        texto = _texto_enunciado(ruta)
         if len(texto) > ENUNCIADO_MAX_CHARS:
             # Se corta al final de un párrafo, no a mitad de palabra.
             corte = texto.rfind("\n\n", 0, ENUNCIADO_MAX_CHARS)
@@ -446,44 +479,49 @@ def leer_enunciado_de_archivos(ctx, item):
 
 
 def fetch_assignments(ctx, module):
-    data = ctx.ws(f"mod_{module}_get_assignments", ctx.course_params)
-    result = []
-    for course in data.get("courses", []):
+    # Pedir todas las asignaturas juntas tarda lo mismo que pedirlas una detrás de otra (unos 12 s):
+    # por separado y a la vez, tarda lo que la más lenta.
+    respuestas = en_paralelo(lambda cid: ctx.ws(f"mod_{module}_get_assignments", {"courseids[0]": cid}),
+                             ctx.course_params.values())
+    pares = [(course, a) for data in respuestas for course in data.get("courses", []) for a in course.get("assignments", [])]
+
+    def leer(par):
+        course, a = par
         course_name = ctx.course_names.get(course["id"], course.get("fullname", "?"))
-        for a in course.get("assignments", []):
-            item = {
-                "id": f"{module}_{a['id']}",
-                "name": a["name"],
-                "course": course_name,
-                "course_id": course["id"],
-                "kind": "tarea",
-                "duedate": a.get("duedate") or 0,
-                "due_label": "Entrega" if a.get("duedate") else "",
-                "summary": html_to_text(a.get("intro", "")),
-                "attachments": download_attachments(ctx, course_name, a["name"], a.get("introattachments") or []),
-                "done": False,
-                "status": "",
-            }
-            config = config_entrega(a)
-            if config:
-                item["entrega"] = config
-            admite_entregas = apply_submission_status(ctx, module, a["id"], item)
-            # Lo que de verdad distingue una tarea de un apartado administrativo (p.ej. "Resultados
-            # de Aprendizaje") es si admite entregas; la fecha o la nota solo valen como respaldo.
-            if admite_entregas is None:
-                admite_entregas = bool(a.get("duedate")) or (a.get("grade") or 0) > 0
-            if not admite_entregas and not a.get("duedate") and not (a.get("grade") or 0) > 0:
-                item["kind"] = "aviso"
-            leer_enunciado_de_archivos(ctx, item)
-            result.append(item)
-    return result
+        item = {
+            "id": f"{module}_{a['id']}",
+            "name": a["name"],
+            "course": course_name,
+            "course_id": course["id"],
+            "kind": "tarea",
+            "duedate": a.get("duedate") or 0,
+            "due_label": "Entrega" if a.get("duedate") else "",
+            "summary": html_to_text(a.get("intro", "")),
+            "attachments": download_attachments(ctx, course_name, a["name"], a.get("introattachments") or []),
+            "done": False,
+            "status": "",
+        }
+        config = config_entrega(a)
+        if config:
+            item["entrega"] = config
+        admite_entregas = apply_submission_status(ctx, module, a["id"], item)
+        # Lo que de verdad distingue una tarea de un apartado administrativo (p.ej. "Resultados
+        # de Aprendizaje") es si admite entregas; la fecha o la nota solo valen como respaldo.
+        if admite_entregas is None:
+            admite_entregas = bool(a.get("duedate")) or (a.get("grade") or 0) > 0
+        if not admite_entregas and not a.get("duedate") and not (a.get("grade") or 0) > 0:
+            item["kind"] = "aviso"
+        leer_enunciado_de_archivos(ctx, item)
+        return item
+
+    return en_paralelo(leer, pares)
 
 
 def fetch_quizzes(ctx):
     data = ctx.ws("mod_quiz_get_quizzes_by_courses", ctx.course_params)
     now_ts = datetime.now().timestamp()
-    result = []
-    for q in data.get("quizzes", []):
+
+    def leer(q):
         course_name = ctx.course_names.get(q["course"], "?")
         opens, closes = q.get("timeopen") or 0, q.get("timeclose") or 0
         if opens > now_ts:
@@ -513,8 +551,9 @@ def fetch_quizzes(ctx):
             raise
         except Exception as e:
             log(f"No se pudieron leer los intentos de «{q['name']}»: {e}")
-        result.append(item)
-    return result
+        return item
+
+    return en_paralelo(leer, data.get("quizzes", []))
 
 
 def fetch_forum_posts(ctx):
@@ -617,9 +656,10 @@ def progreso_asignatura(elementos):
 def fetch_grades(ctx, courses, progreso=None):
     """Notas ya puestas (con el comentario del profe) y la nota total de cada asignatura."""
     notas = []
-    for c in courses:
+    informes = en_paralelo(lambda c: ctx.ws("gradereport_user_get_grade_items", {"courseid": c["id"], "userid": ctx.userid}),
+                           courses)
+    for c, data in zip(courses, informes):
         course_name = ctx.course_names.get(c["id"], c.get("fullname", "?"))
-        data = ctx.ws("gradereport_user_get_grade_items", {"courseid": c["id"], "userid": ctx.userid})
         if progreso is not None and data.get("usergrades"):
             calculo = progreso_asignatura(data["usergrades"][0].get("gradeitems", []))
             if calculo:
@@ -1352,9 +1392,10 @@ def fetch_materials(ctx, courses, practicas=None, correos=None):
 
     Si se pasa la lista `practicas`, se rellena con los ejercicios de práctica del mismo recorrido."""
     materiales = []
-    for c in courses:
+    contenidos = en_paralelo(lambda c: ctx.ws("core_course_get_contents", {"courseid": c["id"]}), courses)
+    for c, secciones in zip(courses, contenidos):
         course_name = ctx.course_names.get(c["id"], c.get("fullname", "?"))
-        for section in ctx.ws("core_course_get_contents", {"courseid": c["id"]}):
+        for section in secciones:
             if correos is not None:
                 buscar_correos(section.get("summary"), f"la página de {course_name}", correos)
             for module in section.get("modules", []):
@@ -2194,19 +2235,34 @@ def run_check(session):
         course_params={f"courseids[{i}]": c["id"] for i, c in enumerate(courses)},
     )
 
-    items = fetch_assignments(ctx, "assign")
-    items += ctx.optional("tareas GVA", lambda: fetch_assignments(ctx, "assigngva")) or []
-    items += ctx.optional("cuestionarios", lambda: fetch_quizzes(ctx)) or []
-    posts = ctx.optional("foros", lambda: fetch_forum_posts(ctx))
     progreso = {}
-    notas = ctx.optional("notas", lambda: fetch_grades(ctx, courses, progreso))
-    mensajes = ctx.optional("mensajes", lambda: fetch_messages(ctx))
     materiales = practicas = None
-    if (first_sync or now_ts - state.get("materiales_ts", 0) >= MATERIALS_EVERY_SECONDS
-            or not os.path.exists(os.path.join(acc_dir, "practicas.json"))
-            or not os.path.exists(os.path.join(acc_dir, "profesores.json"))):
-        encontradas, correos = [], {}
-        materiales = ctx.optional("material de los cursos", lambda: fetch_materials(ctx, courses, encontradas, correos))
+    toca_material = (first_sync or now_ts - state.get("materiales_ts", 0) >= MATERIALS_EVERY_SECONDS
+                     or not os.path.exists(os.path.join(acc_dir, "practicas.json"))
+                     or not os.path.exists(os.path.join(acc_dir, "profesores.json")))
+    encontradas, correos = [], {}
+
+    def material_y_calendario():
+        materiales = fetch_materials(ctx, courses, encontradas, correos)
+        try:
+            actualizar_calendario(session, acc_dir, materiales)
+        except Exception as e:
+            log(f"No se pudo leer el calendario escolar: {e}")
+        return materiales
+
+    # Cada parte es independiente: se piden todas a la vez y se tarda lo que la más lenta, no la suma.
+    with ThreadPoolExecutor(7) as ex:
+        f_tareas = ex.submit(fetch_assignments, ctx, "assign")
+        f_gva = ex.submit(ctx.optional, "tareas GVA", lambda: fetch_assignments(ctx, "assigngva"))
+        f_cuestionarios = ex.submit(ctx.optional, "cuestionarios", lambda: fetch_quizzes(ctx))
+        f_foros = ex.submit(ctx.optional, "foros", lambda: fetch_forum_posts(ctx))
+        f_notas = ex.submit(ctx.optional, "notas", lambda: fetch_grades(ctx, courses, progreso))
+        f_mensajes = ex.submit(ctx.optional, "mensajes", lambda: fetch_messages(ctx))
+        f_material = ex.submit(ctx.optional, "material de los cursos", material_y_calendario) if toca_material else None
+        items = f_tareas.result() + (f_gva.result() or []) + (f_cuestionarios.result() or [])
+        posts, notas, mensajes = f_foros.result(), f_notas.result(), f_mensajes.result()
+        materiales = f_material.result() if f_material else None
+    if toca_material:
         if materiales is not None:
             state["materiales_ts"] = now_ts
             practicas = encontradas
@@ -2219,10 +2275,6 @@ def run_check(session):
                 state["correos_archivos"] = correos_en_archivos(acc_dir, state.get("correos_archivos", {}), correos)
             except Exception as e:
                 log(f"No se pudieron revisar los archivos en busca de correos: {e}")
-            try:
-                actualizar_calendario(session, acc_dir, materiales)
-            except Exception as e:
-                log(f"No se pudo leer el calendario escolar: {e}")
             profesores = ctx.optional("profesores", lambda: fetch_teachers(ctx, courses, correos))
             if profesores is not None:
                 write_atomic(os.path.join(acc_dir, "profesores.json"), json.dumps(profesores, ensure_ascii=False, indent=2))

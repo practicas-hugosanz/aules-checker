@@ -75,18 +75,6 @@ class Handler(BaseHTTPRequestHandler):
         length = min(int(self.headers.get("Content-Length") or 0), maximo)
         return self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
 
-    def _check_or_respond(self, session):
-        try:
-            with check_lock:
-                core.comprobar(session)
-            return True
-        except core.SessionExpired:
-            self._redirect("/login")
-        except Exception as e:
-            core.log(f"ERROR: {e}")
-            self._send(502, interfaz.render_error("No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."))
-        return False
-
     def do_GET(self):
         if not self._host_ok():
             return self._send(403, "Forbidden", "text/plain")
@@ -111,15 +99,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/materiales":
             return self._send(200, interfaz.render_materiales(session, core.load_materials(session)))
         if path == "/api/informe":
-            return self._json(200, core.load_report_status(session))
+            # «comprobando»: la página enseña que se está revisando Aules y mira más a menudo si ha acabado.
+            return self._json(200, dict(core.load_report_status(session), comprobando=check_lock.locked(),
+                                        error=revision["error"]))
         if path == "/api/entrega":
             return self._get_entrega(session)
         if path == "/api/actualizacion":
             return self._json(200, actualizador.estado())
         if path in ("/", "/informe"):
             report = core.report_path(session)
-            if not os.path.exists(report) and not self._check_or_respond(session):
-                return
+            if not os.path.exists(report):
+                # Primera vez con esta cuenta: se lee todo de Aules por detrás y mientras tanto se enseña
+                # «Preparando…», que se recarga sola al acabar. Si falló, se enseña el error con «Reintentar».
+                if not check_lock.locked() and not revision["error"]:
+                    revisar_en_segundo_plano(session, esperar=True)
+                return self._send(200, interfaz.render_preparando("" if check_lock.locked() else revision["error"]))
             with open(report, "r", encoding="utf-8") as f:
                 return self._send(200, f.read())
         if path == "/foto":
@@ -210,9 +204,10 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             return self._redirect("/login") if not path.startswith("/ia/") else self._json(401, {"error": "Sesión de Aules caducada."})
         if path == "/refresh":
-            if self._check_or_respond(session):
-                self._redirect("/")
-            return
+            # No se espera a Aules: vuelves a la página al momento, el botón gira mientras se revisa y la página
+            # se recarga sola con lo nuevo. Si ya se estaba revisando, esa revisión ya trae los datos frescos.
+            revisar_en_segundo_plano(session)
+            return self._redirect("/")
         if path == "/ajustes":
             return self._post_ajustes()
         if path == "/ajustes/modelos":
@@ -247,8 +242,10 @@ class Handler(BaseHTTPRequestHandler):
                 core.borrar_contrasena(session)
         except OSError as e:
             core.log(f"No se pudo guardar la contraseña cifrada: {e}")
-        if self._check_or_respond(session):
-            self._redirect("/")
+        # Entras al momento: con lo último guardado de esta cuenta o, la primera vez, con «Preparando…».
+        # Aules se revisa por detrás (esperando a la revisión automática si estaba en marcha con otra cuenta).
+        revisar_en_segundo_plano(session, esperar=True)
+        self._redirect("/")
 
     def _post_ajustes(self):
         form = parse_qs(self._body(), keep_blank_values=True)
@@ -513,6 +510,35 @@ def vigilar_codigo():
         os.execv(sys.executable, [sys.executable, os.path.join(core.BASE_DIR, "servidor.py")])
 
 
+# El error de la última revisión pedida a mano (refrescar o iniciar sesión), para enseñarlo en la página.
+revision = {"error": ""}
+
+
+def revisar_en_segundo_plano(session, esperar=False):
+    """Revisa Aules sin hacer esperar a nadie. Si ya hay una revisión en marcha, no lanza otra
+    (salvo con `esperar`: entonces se pone a la cola, para cuando la que está en marcha es de otra cuenta)."""
+    # El cerrojo se coge aquí y no en el hilo: así la página que se pide justo después ya ve «revisando».
+    libre = check_lock.acquire(blocking=False)
+    if not libre and not esperar:
+        return
+    revision["error"] = ""
+
+    def revisar():
+        if not libre:
+            check_lock.acquire()
+        try:
+            core.comprobar(session)
+        except core.SessionExpired:
+            pass  # sesion_caducada ya avisó y cerró la sesión
+        except Exception as e:
+            core.log(f"ERROR al revisar Aules: {e}")
+            revision["error"] = "No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."
+        finally:
+            check_lock.release()
+
+    threading.Thread(target=revisar, daemon=True).start()
+
+
 def comprobar_periodicamente():
     """Revisa Aules cada minuto y medio mientras la app está abierta."""
     ultimo_error = None
@@ -531,6 +557,7 @@ def comprobar_periodicamente():
         if session and check_lock.acquire(blocking=False):
             try:
                 core.comprobar(session)
+                revision["error"] = ""
                 if ultimo_error:
                     core.log("Conexión con Aules recuperada")
                 ultimo_error = None
