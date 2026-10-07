@@ -1654,6 +1654,10 @@ def _estado_nota(n):
         estado = "Aprobado" if nota >= maximo / 2 else "Suspendido"
     clase = "pill-aprobado" if estado.lower().startswith(("aprob", "aprov", "pass")) else "pill-suspendido"
     icono = "check" if clase == "pill-aprobado" else "x"
+    minimo = n.get("aprobar")
+    if minimo:
+        titulo = html.escape(f'Nota mínima para aprobar: {minimo}' + (f' / {n["max"]}' if n.get("max") else ""))
+        return f'<span class="pill {clase}" title="{titulo}">{icon(icono, 11)}{html.escape(estado)} · mínimo {html.escape(minimo)}</span>'
     return f'<span class="pill {clase}">{icon(icono, 11)}{html.escape(estado)}</span>'
 
 

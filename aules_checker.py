@@ -689,7 +689,21 @@ def fetch_grades(ctx, courses, progreso=None):
                         "url": f"{ctx.base_url}/grade/report/user/index.php?id={c['id']}",
                     }
                 )
+    # Aules no da la nota mínima para aprobar junto a la nota, pero sí en el cuestionario.
+    en_paralelo(lambda n: _nota_para_aprobar(ctx, n), [n for n in notas if n["activity"].startswith("quiz_")])
     return notas
+
+
+def _nota_para_aprobar(ctx, nota):
+    nota["aprobar"] = ""
+    try:
+        minimo = ctx.ws("mod_quiz_get_user_best_grade", {"quizid": int(nota["activity"][5:])}).get("gradetopass")
+        if minimo and float(minimo) > 0:
+            nota["aprobar"] = _numero(float(minimo))
+    except SessionExpired:
+        raise
+    except Exception as e:
+        log(f"No se pudo leer la nota mínima de «{nota['name']}»: {e}")
 
 
 def fetch_messages(ctx):

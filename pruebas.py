@@ -148,6 +148,10 @@ class Notas(unittest.TestCase):
         self.assertEqual(self.badge(self.nota("85,00", maximo="100")), "Aprobado")
         self.assertEqual(self.badge(self.nota("60,00 %", maximo="")), "Aprobado")
 
+    def test_muestra_la_nota_minima_para_aprobar(self):
+        self.assertEqual(self.badge(self.nota("6,55", estado="Suspenso", aprobar="8")), "Suspenso · mínimo 8")
+        self.assertEqual(self.badge(self.nota("6,55", estado="Suspenso", aprobar="")), "Suspenso")
+
     def test_sin_nota_numerica_no_hay_badge(self):
         self.assertEqual(self.badge(self.nota("-")), "")
         self.assertEqual(self.badge(self.nota("Apto", maximo="")), "")

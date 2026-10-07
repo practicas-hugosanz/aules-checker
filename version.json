@@ -1,18 +1,15 @@
 {
-  "version": "1.8.0",
+  "version": "1.8.1",
   "cambios": [
-    "Refrescar es instantáneo: la página sigue usable y se actualiza sola cuando llegan los datos (unos 5-7 s, antes 32 s)",
-    "Iniciar sesión entra al momento con lo último guardado; la primera vez con una cuenta enseña «Preparando tu resumen» en vez de dejar el navegador colgado",
-    "Aules se consulta en paralelo y los enunciados en PDF o Word ya leídos no se vuelven a leer",
-    "Si Aules no responde al refrescar, la página lo avisa y enseña lo último guardado"
+    "Los cuestionarios suspensos muestran la nota mínima para aprobar que puso el profe (p. ej. «Suspenso · mínimo 8»)"
   ],
   "archivos": {
-    "aules_checker.py": "9cf12508b8dec141a2e36e72978eb8015a75ee9bb75e496863bc913f22431e6d",
+    "aules_checker.py": "0982746bb8b164ee2b4472447b00bf8cab7b19ce28bc02606b3512c1fab40242",
     "servidor.py": "ee6fd808a88fd7415903f91c57179698a02b767caa522dd1c19bb522311f24db",
-    "interfaz.py": "92f59f583c8fbecc1877840bf917bd8f417c013d303ece2749c30ab4e88460b5",
+    "interfaz.py": "52eeb64aeeadfa608e7380e5d6a42fd75e05491b4449cf2c0005cb5cb4247723",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
     "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
-    "actualizador.py": "f4e1f1f901cd42c5833b5c08468efaa5ce3e6d47a56d2528a91a96f32e55bb32",
+    "actualizador.py": "6b6d3d35c5676e05f2ac214c5e190a41ca8c3c4c6b6ba3985c0df0c721d6b287",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }
