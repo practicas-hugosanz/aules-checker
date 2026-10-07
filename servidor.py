@@ -207,6 +207,7 @@ class Handler(BaseHTTPRequestHandler):
             # No se espera a Aules: vuelves a la página al momento, el botón gira mientras se revisa y la página
             # se recarga sola con lo nuevo. Si ya se estaba revisando, esa revisión ya trae los datos frescos.
             revisar_en_segundo_plano(session)
+            buscar_actualizacion_en_segundo_plano()
             return self._redirect("/")
         if path == "/ajustes":
             return self._post_ajustes()
@@ -537,6 +538,20 @@ def revisar_en_segundo_plano(session, esperar=False):
             check_lock.release()
 
     threading.Thread(target=revisar, daemon=True).start()
+
+
+def buscar_actualizacion_en_segundo_plano():
+    """Al refrescar también se busca una versión nueva de la app, sin esperar a la comprobación de cada 6 horas."""
+    if actualizador.es_copia_de_desarrollo():
+        return
+
+    def buscar():
+        try:
+            actualizador.buscar()
+        except (requests.RequestException, ValueError, actualizador.ActualizacionError) as e:
+            core.log(f"No se pudo buscar actualizaciones: {e}")
+
+    threading.Thread(target=buscar, daemon=True).start()
 
 
 def comprobar_periodicamente():
