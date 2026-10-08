@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/informe":
             # «comprobando»: la página enseña que se está revisando Aules y mira más a menudo si ha acabado.
             return self._json(200, dict(core.load_report_status(session), comprobando=check_lock.locked(),
-                                        error=revision["error"]))
+                                        error=revision["error"], error_tipo=revision["tipo"], error_desde=revision["desde"]))
         if path == "/api/entrega":
             return self._get_entrega(session)
         if path == "/api/actualizacion":
@@ -359,14 +359,22 @@ class Handler(BaseHTTPRequestHandler):
                     core.escribir_informe(core.load_session() or session)
                 return self._json(200, resultado)
             if path == "/api/actualizar":
+                # Mientras se revisa Aules o trabaja la IA no se cambia el código por debajo, pero sin esperar sin fin.
+                if not check_lock.acquire(timeout=60):
+                    return self._json(409, {"error": "Se está revisando Aules. Vuelve a pulsar «Actualizar» en un momento."})
                 try:
-                    # Mientras se revisa Aules o trabaja la IA no se cambia el código por debajo.
-                    with check_lock, ia_lock:
+                    if not ia_lock.acquire(timeout=5):
+                        return self._json(409, {"error": "La IA está trabajando. Vuelve a pulsar «Actualizar» cuando acabe."})
+                    try:
                         return self._json(200, actualizador.instalar(core.log))
+                    finally:
+                        ia_lock.release()
                 except (actualizador.ActualizacionError, requests.RequestException) as e:
                     core.log(f"No se pudo actualizar: {e}")
                     mensaje = str(e) if isinstance(e, actualizador.ActualizacionError) else "No se pudo descargar de GitHub. Comprueba la conexión."
                     return self._json(400, {"error": mensaje})
+                finally:
+                    check_lock.release()
             if path == "/api/horario/releer":
                 return self._json(200, core.releer_horario(session, datos.get("id") or ""))
             if path == "/api/horario/guardar":
@@ -511,8 +519,26 @@ def vigilar_codigo():
         os.execv(sys.executable, [sys.executable, os.path.join(core.BASE_DIR, "servidor.py")])
 
 
-# El error de la última revisión pedida a mano (refrescar o iniciar sesión), para enseñarlo en la página.
-revision = {"error": ""}
+# Si Aules está caído: el aviso, el tipo («mantenimiento» o «conexion») y desde cuándo, para el popup de la página.
+# Se mantiene hasta que una revisión vuelva a ir bien (pulsar refrescar no lo borra).
+revision = {"error": "", "tipo": "", "desde": 0}
+
+
+def mensaje_de_error(e):
+    if isinstance(e, core.AulesEnMantenimiento):
+        return str(e)
+    return "No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."
+
+
+def anotar_fallo(e):
+    if not revision["error"]:
+        revision["desde"] = int(time.time())
+    revision["error"] = mensaje_de_error(e)
+    revision["tipo"] = "mantenimiento" if isinstance(e, core.AulesEnMantenimiento) else "conexion"
+
+
+def anotar_exito():
+    revision.update(error="", tipo="", desde=0)
 
 
 def revisar_en_segundo_plano(session, esperar=False):
@@ -522,18 +548,18 @@ def revisar_en_segundo_plano(session, esperar=False):
     libre = check_lock.acquire(blocking=False)
     if not libre and not esperar:
         return
-    revision["error"] = ""
 
     def revisar():
         if not libre:
             check_lock.acquire()
         try:
             core.comprobar(session)
+            anotar_exito()
         except core.SessionExpired:
             pass  # sesion_caducada ya avisó y cerró la sesión
         except Exception as e:
             core.log(f"ERROR al revisar Aules: {e}")
-            revision["error"] = "No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."
+            anotar_fallo(e)
         finally:
             check_lock.release()
 
@@ -542,8 +568,6 @@ def revisar_en_segundo_plano(session, esperar=False):
 
 def buscar_actualizacion_en_segundo_plano():
     """Al refrescar también se busca una versión nueva de la app, sin esperar a la comprobación de cada 6 horas."""
-    if actualizador.es_copia_de_desarrollo():
-        return
 
     def buscar():
         try:
@@ -572,13 +596,15 @@ def comprobar_periodicamente():
         if session and check_lock.acquire(blocking=False):
             try:
                 core.comprobar(session)
-                revision["error"] = ""
+                anotar_exito()
                 if ultimo_error:
                     core.log("Conexión con Aules recuperada")
                 ultimo_error = None
             except core.SessionExpired:
                 pass  # sesion_caducada ya avisó y cerró la sesión
             except Exception as e:
+                # La página avisa también de los fallos de la revisión automática (sin conexión, mantenimiento).
+                anotar_fallo(e)
                 # Sin conexión se repetiría el mismo error cada 90 s: solo se anota cuando cambia.
                 if str(e) != ultimo_error:
                     core.log(f"ERROR en la comprobación automática: {e}")

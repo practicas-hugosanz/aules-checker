@@ -45,7 +45,11 @@ http = requests.Session()
 # Reintenta cortes de red y errores 502/503/504 puntuales de Aules (solo son consultas).
 http.mount(
     "https://",
-    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=(502, 503, 504), allowed_methods=None),
+    # Sin respetar «Retry-After»: en mantenimiento Aules pide volver en 300 s y cada consulta se quedaba colgada
+    # hasta 15 minutos (3 reintentos), con la app «revisando» sin parar. Sin lanzar error al agotar los reintentos,
+    # para poder ver qué respondió Aules (p. ej. su página de mantenimiento).
+    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=(502, 503, 504), allowed_methods=None,
+                                  respect_retry_after_header=False, raise_on_status=False),
                 pool_maxsize=12),
 )
 # Las consultas van en paralelo (Aules tarda lo mismo en una que en varias a la vez), pero nunca más de
@@ -70,6 +74,18 @@ class LoginError(Exception):
 
 class SessionExpired(Exception):
     pass
+
+
+class AulesEnMantenimiento(RuntimeError):
+    pass
+
+
+MENSAJE_MANTENIMIENTO = "Aules está en mantenimiento ahora mismo. Se muestra lo último guardado y se volverá a mirar solo."
+
+
+def _comprobar_mantenimiento(r):
+    if r.status_code == 503 and re.search(r"manteniment|mantenimiento|maintenance", r.text[:3000], re.I):
+        raise AulesEnMantenimiento(MENSAJE_MANTENIMIENTO)
 
 
 def write_atomic(path, content):
@@ -220,6 +236,11 @@ def get_token(base_url, username, password):
         data={"username": username, "password": password, "service": "moodle_mobile_app"},
         timeout=20,
     )
+    if r.status_code == 503:
+        try:
+            _comprobar_mantenimiento(r)
+        except AulesEnMantenimiento:
+            raise LoginError("Aules está en mantenimiento ahora mismo. Prueba a entrar dentro de un rato.") from None
     r.raise_for_status()
     data = r.json()
     if "token" not in data:
@@ -235,6 +256,7 @@ def call_ws(base_url, token, wsfunction, params=None):
         payload.update(params)
     with _limite_aules:
         r = http.post(f"{base_url}/webservice/rest/server.php", data=payload, timeout=30)
+    _comprobar_mantenimiento(r)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, dict) and data.get("exception"):

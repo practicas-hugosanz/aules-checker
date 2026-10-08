@@ -231,6 +231,27 @@ details[open] > summary > .chev-down { transform: rotate(180deg); }
   padding: 10px 14px; font-size: 13.5px; margin-bottom: 16px; }
 .warn .i { margin-top: 2px; }
 .warn[hidden] { display: none; }
+.popup-aules { position: fixed; right: 20px; bottom: 20px; z-index: 50; display: flex; gap: 12px; align-items: flex-start;
+  width: min(380px, calc(100vw - 32px)); padding: 14px 14px 14px 16px; background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 16px; box-shadow: inset 4px 0 0 var(--red), 0 12px 32px rgba(0,0,0,.18);
+  animation: pa-entra .25s ease-out; }
+.popup-aules[hidden] { display: none; }
+.popup-aules.ok { box-shadow: inset 4px 0 0 var(--green), 0 12px 32px rgba(0,0,0,.18); }
+.pa-icono { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--red-soft); color: var(--red); }
+.popup-aules.ok .pa-icono { background: var(--green-soft); color: var(--green); }
+.pa-icono > span { display: grid; }
+.popup-aules .pa-ok, .popup-aules.ok .pa-fallo { display: none; }
+.popup-aules.ok .pa-ok { display: grid; }
+.pa-texto { flex: 1; min-width: 0; }
+.pa-texto strong { display: block; font-size: 15px; margin-top: 1px; }
+.pa-texto p { margin: 4px 0 0; font-size: 13.5px; color: var(--muted); }
+.pa-cerrar { flex: none; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 8px; }
+.pa-cerrar:hover { background: var(--card-2); color: var(--text); }
+.pa-cerrar:focus-visible { outline: 2px solid var(--accent); }
+@keyframes pa-entra { from { opacity: 0; transform: translateY(12px); } }
+@media (max-width: 680px) { .popup-aules { right: 16px; left: 16px; bottom: 16px; width: auto; } }
+@media (prefers-reduced-motion: reduce) { .popup-aules { animation: none; } }
 .aviso-version { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; background: var(--card); border: 1px solid var(--border);
   box-shadow: inset 4px 0 0 var(--accent), var(--shadow); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; font-size: 13.5px; }
 .aviso-version[hidden] { display: none; }
@@ -861,12 +882,7 @@ REPORT_JS_FIN = """
       var d = await r.json();
       revisando = !!d.comprobando;
       setLoading(revisando);
-      // Si la última revisión falló (sin conexión), se avisa; lo que se ve es lo último guardado.
-      var fallo = document.getElementById('aviso-revision');
-      if (fallo) {
-        fallo.hidden = !d.error || revisando;
-        fallo.lastElementChild.textContent = (d.error || '') + ' Se muestra lo último guardado.';
-      }
+      estadoAules(d);
       if (d.actualizado && up) {
         up.setAttribute('data-ts', d.actualizado);
         var abs = document.getElementById('updated-abs'), f = new Date(d.actualizado * 1000);
@@ -879,6 +895,62 @@ REPORT_JS_FIN = """
       }
     } catch (e) {}
   }
+  // Si Aules está caído: popup (una vez por caída; si lo cierras queda solo la franja de arriba) y, cuando
+  // vuelve, «Aules vuelve a funcionar». Lo que se ve mientras tanto es lo último guardado.
+  var popup = document.getElementById('popup-aules');
+  var franja = document.getElementById('aviso-revision');
+  var ocultarPopup = null;
+  function guardado(clave, valor) {
+    try {
+      if (valor === undefined) return sessionStorage.getItem(clave);
+      if (valor === null) sessionStorage.removeItem(clave); else sessionStorage.setItem(clave, valor);
+    } catch (e) {}
+    return null;
+  }
+  function hace(ts) {
+    var min = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+    if (min < 1) return 'de hace un momento';
+    if (min < 60) return 'de hace ' + min + ' min';
+    var h = Math.round(min / 60);
+    return h < 24 ? 'de hace ' + h + ' h' : 'de hace ' + Math.round(h / 24) + ' días';
+  }
+  function abrirPopup(ok, titulo, texto) {
+    clearTimeout(ocultarPopup);
+    popup.classList.toggle('ok', ok);
+    popup.querySelector('strong').textContent = titulo;
+    popup.querySelector('p').textContent = texto;
+    popup.hidden = false;
+  }
+  function estadoAules(d) {
+    if (!popup) return;
+    var mantenimiento = d.error_tipo === 'mantenimiento';
+    var titulo = mantenimiento ? 'Aules está en mantenimiento' : 'No se puede conectar con Aules';
+    if (franja) {
+      franja.hidden = !d.error;
+      franja.lastElementChild.textContent = titulo + '. Se muestra lo último guardado.';
+    }
+    if (d.error) {
+      guardado('aules-caido', '1');
+      if (guardado('aules-popup-cerrado') === String(d.error_desde) || (!popup.hidden && !popup.classList.contains('ok'))) return;
+      popup.dataset.desde = String(d.error_desde);
+      abrirPopup(false, titulo, (mantenimiento ? 'Aules no está disponible ahora mismo. '
+        : 'Puede que Aules esté caído o que falle tu conexión a internet. ')
+        + 'Ves lo último guardado' + (d.actualizado ? ' (' + hace(d.actualizado) + ')' : '')
+        + '. La app vuelve a intentarlo sola y te avisará aquí cuando funcione.');
+    } else if (guardado('aules-caido') && !d.comprobando) {
+      guardado('aules-caido', null);
+      guardado('aules-popup-cerrado', null);
+      abrirPopup(true, 'Aules vuelve a funcionar', 'Ya tienes tus tareas y notas al día.');
+      ocultarPopup = setTimeout(function () { popup.hidden = true; }, 6000);
+    } else if (!popup.classList.contains('ok')) {
+      popup.hidden = true;
+    }
+  }
+  if (popup) popup.querySelector('.pa-cerrar').addEventListener('click', function () {
+    popup.hidden = true;
+    if (!popup.classList.contains('ok')) guardado('aules-popup-cerrado', String(popup.dataset.desde || ''));
+  });
+
   // Mientras se revisa Aules se mira cada 3 s, para enseñar los datos nuevos en cuanto llegan; si no, cada 20 s.
   var revisando = false;
   async function ciclo() {
@@ -2315,6 +2387,11 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
 
   <div class="aviso-version" id="aviso-version" role="status" hidden></div>
   <div class="warn" id="aviso-revision" role="status" hidden>{icon("triangle-alert")}<span></span></div>
+  <div class="popup-aules" id="popup-aules" role="alertdialog" aria-labelledby="popup-aules-titulo" hidden>
+    <span class="pa-icono"><span class="pa-fallo">{icon("triangle-alert", 20)}</span><span class="pa-ok">{icon("check", 20)}</span></span>
+    <div class="pa-texto"><strong id="popup-aules-titulo"></strong><p></p></div>
+    <button type="button" class="pa-cerrar" aria-label="Cerrar">{icon("x", 16)}</button>
+  </div>
   {warn_html}
 
   <div class="stats">

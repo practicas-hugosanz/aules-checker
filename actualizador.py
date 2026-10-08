@@ -16,7 +16,7 @@ import time
 
 import requests
 
-VERSION = "1.8.2"
+VERSION = "1.8.3"
 # Usuario y repositorio de GitHub de donde salen las versiones nuevas.
 REPO = "practicas-hugosanz/aules-checker"
 RAMA = "main"
@@ -60,7 +60,7 @@ def _numeros(version):
 
 
 def es_copia_de_desarrollo():
-    """En la carpeta donde se programa la app (con git) no se actualiza sola: se machacaría el trabajo."""
+    """La carpeta donde se programa la app (con git): avisa igual, pero se actualiza con git y nunca pisa cambios."""
     return os.path.isdir(os.path.join(BASE_DIR, ".git"))
 
 
@@ -91,7 +91,7 @@ def buscar():
 
 
 def estado():
-    nueva = _nueva if _nueva and not es_copia_de_desarrollo() else None
+    nueva = _nueva
     return {
         "version": VERSION,
         "nueva": {"version": nueva["version"], "cambios": nueva["cambios"]} if nueva else None,
@@ -144,16 +144,48 @@ def _pip(requisitos):
         raise ActualizacionError("No se pudieron instalar las librerías nuevas. Comprueba la conexión y vuelve a probar.")
 
 
+def _git(*args):
+    return subprocess.run(["git", *args], cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _actualizar_con_git(info, log):
+    """En la copia de trabajo, la versión nueva se trae con git. Solo si no hay cambios sin publicar: nunca se pisan."""
+    try:
+        pendientes = _git("status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ActualizacionError(f"No se pudo usar git en esta carpeta: {e}")
+    if pendientes.returncode != 0:
+        raise ActualizacionError("No se pudo usar git en esta carpeta.")
+    if pendientes.stdout.strip():
+        raise ActualizacionError("Tienes cambios sin publicar en esta carpeta. Publícalos (o guárdalos) antes de "
+                                 "actualizar, para no perderlos. No se ha cambiado nada.")
+    with open(os.path.join(BASE_DIR, "requirements.txt"), "rb") as f:
+        requisitos = f.read()
+    try:
+        r = _git("pull", "--ff-only", "-q", "origin", RAMA)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ActualizacionError(f"No se pudo traer la versión nueva con git: {e}")
+    if r.returncode != 0:
+        detalle = (r.stderr or r.stdout).strip().splitlines()
+        raise ActualizacionError("No se pudo traer la versión nueva con git" + (f": {detalle[-1]}" if detalle else "."))
+    with open(os.path.join(BASE_DIR, "requirements.txt"), "rb") as f:
+        if f.read() != requisitos:
+            _pip(os.path.join(BASE_DIR, "requirements.txt"))
+    log(f"Copia de trabajo actualizada con git a la versión {info['version']} (desde la {VERSION})")
+    return {"ok": True, "version": info["version"]}
+
+
 def instalar(log=print):
     """Descarga la versión nueva, comprueba cada archivo y lo sustituye. Si algo falla, no toca nada."""
-    if es_copia_de_desarrollo():
-        raise ActualizacionError("Esta es la copia donde se programa la app: se actualiza con git, no desde aquí.")
     if not _instalando.acquire(blocking=False):
         raise ActualizacionError("Ya se está actualizando.")
     try:
         info = buscar()
         if not info:
             raise ActualizacionError("Ya tienes la última versión.")
+        if es_copia_de_desarrollo():
+            return _actualizar_con_git(info, log)
         ref = f"v{info['version']}"
         descargados = {}
         for nombre, esperada in info["archivos"].items():
@@ -223,16 +255,15 @@ def vigilar(log=print):
     time.sleep(60)
     ultimo_error = None
     while True:
-        if not es_copia_de_desarrollo():
-            try:
-                nueva = buscar()
-                if nueva and ultimo_error != f"v{nueva['version']}":
-                    log(f"Hay una versión nueva de la app: {nueva['version']}")
-                    ultimo_error = f"v{nueva['version']}"
-            except (requests.RequestException, ValueError, ActualizacionError) as e:
-                if str(e) != ultimo_error:
-                    log(f"No se pudo buscar actualizaciones: {e}")
-                ultimo_error = str(e)
+        try:
+            nueva = buscar()
+            if nueva and ultimo_error != f"v{nueva['version']}":
+                log(f"Hay una versión nueva de la app: {nueva['version']}")
+                ultimo_error = f"v{nueva['version']}"
+        except (requests.RequestException, ValueError, ActualizacionError) as e:
+            if str(e) != ultimo_error:
+                log(f"No se pudo buscar actualizaciones: {e}")
+            ultimo_error = str(e)
         time.sleep(COMPROBAR_CADA_SEGUNDOS)
 
 
