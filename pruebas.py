@@ -590,5 +590,83 @@ class Actualizaciones(unittest.TestCase):
             self.assertFalse(actualizador.restaurar_anterior(log=lambda m: None))
 
 
+class RevisionDeCuestionarios(unittest.TestCase):
+    """analizar_pregunta convierte el HTML de la revisión de Aules en preguntas, opciones y respuestas."""
+
+    @staticmethod
+    def opcion(letra, texto, marcada=False, clase=""):
+        return (f'<div class="r0 {clase}"><input type="radio" disabled="disabled" value="0"{" checked=\"checked\"" if marcada else ""} />'
+                f'<div class="d-flex w-auto" data-region="answer-label"><span class="answernumber">{letra}. </span>'
+                f'<div class="flex-fill ms-1">{texto}</div></div></div>')
+
+    def pregunta(self, opciones, estado="incorrect", correcta="", comentario=""):
+        html = (f'<div class="que multichoice deferredfeedback {estado}"><div class="info"><h3 class="no">Pregunta <span class="qno">3</span></h3></div>'
+                '<div class="content"><div class="formulation clearfix"><h4 class="accesshide">Enunciado de la pregunta</h4>'
+                '<div class="qtext"><p>¿Cuál es la memoria más rápida?</p></div><fieldset class="ablock"><div class="answer">'
+                + "".join(opciones) + '</div></fieldset></div><div class="outcome clearfix"><div class="feedback">'
+                + (f'<div class="specificfeedback">{comentario}</div>' if comentario else "")
+                + (f'<div class="rightanswer">La respuesta correcta es: {correcta}</div>' if correcta else "")
+                + '</div></div></div></div><script>var x = 1;</script>')
+        return {"html": html, "questionnumber": "3", "type": "multichoice", "stateclass": estado,
+                "status": "Incorrecta", "mark": "-0,25", "maxmark": 1}
+
+    def test_fallada_con_respuesta_correcta(self):
+        p = core.analizar_pregunta(self.pregunta(
+            [self.opcion("a", "Registros"), self.opcion("b", "Memoria caché", marcada=True, clase="incorrect")],
+            correcta="Registros", comentario="Los registros están dentro de la CPU."))
+        self.assertEqual(p["enunciado"], "¿Cuál es la memoria más rápida?")
+        self.assertEqual([(o["letra"], o["texto"], o["marcada"], o["es_correcta"]) for o in p["opciones"]],
+                         [("a", "Registros", False, True), ("b", "Memoria caché", True, False)])
+        self.assertEqual(p["correcta"], "Registros")
+        self.assertEqual(p["comentario"], "Los registros están dentro de la CPU.")
+        self.assertEqual((p["estado"], p["nota"], p["max"]), ("incorrect", "-0,25", "1"))
+
+    def test_sin_respuesta_correcta_visible_vale_la_marcada_si_acerto(self):
+        p = core.analizar_pregunta(self.pregunta(
+            [self.opcion("a", "Registros", marcada=True, clase="correct"), self.opcion("b", "Disco")], estado="correct",
+            comentario="Respuesta correcta"))
+        self.assertEqual([o["es_correcta"] for o in p["opciones"]], [True, False])
+        self.assertEqual((p["correcta"], p["comentario"]), ("", ""))  # «Respuesta correcta» a secas no aporta nada
+
+    def test_arrastrar_a_una_imagen(self):
+        zonas = ('{"1":{"no":"1","group":"1","xy":["239","66"],"fieldname":"q1:5_p1"},'
+                 '"2":{"no":"2","group":"1","xy":["224","147"],"fieldname":"q1:5_p2"}}').replace('"', "&quot;")
+        html = ('<div class="que ddimageortext correct"><div class="formulation"><div class="qtext"><p>Ordena las memorias</p></div>'
+                '<div class="ddarea"><div class="droparea"><img class="dropbackground" src="https://aules.edu.gva.es/fp/pluginfile.php/1/fondo.jpg" />'
+                f'<div class="dropzones" data-place-info="{zonas}"></div></div><div class="draghomes"><div class="dragitemgroup1">'
+                '<div class="group1 draghome choice1">Memoria caché</div><div class="group1 draghome choice2">Registros</div></div></div></div>'
+                '<input type="hidden" name="q1:5_p1" value="2" /><input type="hidden" name="q1:5_p2" value="0" /></div></div>')
+        p = core.analizar_pregunta({"html": html, "type": "ddimageortext"}, guardar_imagen=lambda url: "revisiones/1/fondo.jpg")
+        self.assertEqual(p["fondo"], "revisiones/1/fondo.jpg")
+        self.assertEqual([(z["n"], z["x"], z["texto"]) for z in p["zonas"]], [("1", 239, "Registros"), ("2", 224, "")])
+
+    def test_la_pagina_marca_tu_respuesta_y_la_correcta(self):
+        p = core.analizar_pregunta(self.pregunta(
+            [self.opcion("a", "Registros"), self.opcion("b", "Memoria caché", marcada=True, clase="incorrect")], correcta="Registros"))
+        pagina = interfaz.render_revision({"id": "quiz_1", "name": "Batería 1", "course": "Sistemas"},
+                                          {"intentos": [{"id": 9, "numero": 1, "fin": 0, "nota": "9,06", "preguntas": [p],
+                                                         "error": "", "url": "https://aules.edu.gva.es/fp/mod/quiz/review.php?attempt=9"}]}, "10")
+        self.assertIn('class="op correcta"', pagina)
+        self.assertIn('class="op tuya mala"', pagina)
+        self.assertIn("Respuesta correcta:", pagina)
+        self.assertIn("9,06", sin_etiquetas(pagina))
+
+    def test_html_de_word_sin_cerrar_no_mete_las_respuestas_en_el_enunciado(self):
+        html = ('<div class="que ordering complete"><div class="formulation"><div class="qtext"><div class="clearfix">'
+                '<p>Ordena los pasos</p><div>caja de Word sin cerrar</div></div>'
+                '<div class="ablock"><div class="answer ordering"><ul class="sortablelist"><li>Paso B</li><li>Paso A</li></ul></div></div>'
+                '</div></div>')
+        p = core.analizar_pregunta({"html": html, "type": "ordering", "mark": "0,20", "maxmark": 1})
+        self.assertNotIn("Paso", p["enunciado"])
+        self.assertEqual([o["texto"] for o in p["orden"]], ["Paso B", "Paso A"])
+
+    def test_imagenes_solo_de_aules(self):
+        sesion = {"base_url": "https://aules.edu.gva.es/fp", "token": "secreto", "username": "u"}
+        guardar = core._guardar_imagen_revision(sesion, tempfile.gettempdir())
+        with mock.patch.object(core.http, "get") as get:
+            self.assertEqual(guardar("https://otra-web.com/pluginfile.php/1/a.jpg"), "")
+            get.assert_not_called()  # el token nunca va a otra web
+
+
 if __name__ == "__main__":
     unittest.main()

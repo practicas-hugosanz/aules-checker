@@ -94,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             seleccionado = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             return self._send(200, interfaz.render_horario(
                 core.horarios_todos(session), seleccionado, core.dias_sin_clase(core.carpeta(session))))
+        if path == "/revision":
+            return self._get_revision(session)
         if path == "/profesores":
             return self._send(200, interfaz.render_profesores(core.load_teachers(session)))
         if path == "/materiales":
@@ -126,6 +128,27 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/material/"):
             return self._serve_material(session, path)
         self._send(404, "No encontrado", "text/plain; charset=utf-8")
+
+    def _get_revision(self, session):
+        consulta = parse_qs(urlparse(self.path).query)
+        quiz_id = consulta.get("id", [""])[0]
+        item = next((i for i in core.load_items(session) if i["id"] == quiz_id), None)
+        if not item or not quiz_id.startswith("quiz_") or not quiz_id[5:].isdigit():
+            return self._redirect("/")
+        nota = next((n for n in core.load_grades(session) if n.get("activity") == quiz_id), None)
+        datos, error = None, ""
+        try:
+            datos = core.revision_cuestionario(session, quiz_id)
+        except core.SessionExpired:
+            if not core.sesion_caducada(session):
+                return self._redirect("/login")
+            error = "Se ha renovado la sesión de Aules. Recarga la página."
+        except core.AulesEnMantenimiento as e:
+            error = str(e)
+        except Exception as e:
+            core.log(f"No se pudo abrir la revisión de «{item['name']}»: {e}")
+            error = "No se pudo conectar con Aules para leer este cuestionario. Inténtalo de nuevo en un momento."
+        self._send(200, interfaz.render_revision(item, datos, (nota or {}).get("max", ""), consulta.get("intento", [None])[0], error))
 
     def _serve_attachment(self, session, path):
         base = os.path.realpath(os.path.join(core.carpeta(session), "adjuntos"))
