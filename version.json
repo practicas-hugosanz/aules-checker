@@ -1,16 +1,15 @@
 {
-  "version": "1.9.1",
+  "version": "1.9.2",
   "cambios": [
-    "Si el enunciado de una tarea está en un PDF, «Ver enunciado» enseña el PDF (con sus capturas y formato) en vez del texto sacado de él, con botones para abrirlo en otra pestaña o descargarlo",
-    "La página no se recarga sola mientras lees un PDF abierto: espera a que lo cierres"
+    "Los resúmenes y borradores con IA ya no leen la cabecera y el pie que se repiten en cada página de los PDFs de los enunciados (nombre del instituto, dirección, teléfono…): menos ruido y más claridad"
   ],
   "archivos": {
     "aules_checker.py": "88e63f888d591da976bbeede4533236ab8512da235a38b9d496ad6b575b7c549",
     "servidor.py": "31bcec985f6f9d73530b18bf605c74323e6ab0a2cd905e16dc3cceb22e434b9f",
     "interfaz.py": "4d3695004ffa3c850ebd7583fdef6fef4ffa11ac59b5a7e069df892e9493d3ca",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
-    "ia.py": "64fb75324cbdbbfb7291ce62409826b4bc23a3bcf27f81b9bbe066def9826169",
-    "actualizador.py": "1469d96eeb5ddfc572cb2984cd14a755b196f6ba28551e35aab7066de1bde27e",
+    "ia.py": "9e8098ebf428fab6fbcab71782e7ad97d17772e8b03f5869f6c055ee2abd82a9",
+    "actualizador.py": "36a40584ce980f71c8aeab72cb94316e655aaedd4850db9857b392c150eb5327",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }

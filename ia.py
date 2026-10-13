@@ -363,6 +363,12 @@ def _lineas_pagina(texto):
     return lineas
 
 
+# Líneas de arriba y de abajo de cada página donde se busca la cabecera y el pie. Una cabecera de instituto (nombre,
+# calle, código postal, correo, teléfono, web…) pasa de 6 líneas, y en las páginas con poco texto el PDF saca el pie
+# después del contenido, así que no basta con mirar las 3 primeras y las 3 últimas.
+VENTANA_CABECERA = 10
+
+
 def _quitar_cabeceras(paginas):
     """Quita la cabecera y el pie que se repiten en casi todas las páginas (el número de página puede cambiar)."""
     if len(paginas) < 3:
@@ -372,24 +378,62 @@ def _quitar_cabeceras(paginas):
     apariciones = {}
     for numero, lineas in enumerate(paginas, 1):
         llenas = [l for l in lineas if l]
-        for l in llenas[:3] + llenas[-3:]:
+        for l in llenas[:VENTANA_CABECERA] + llenas[-VENTANA_CABECERA:]:
             apariciones.setdefault(clave(l), {}).setdefault(numero, l)
 
-    def es_cabecera(por_pagina):
+    def huecos_de(por_pagina):
+        """None si la línea no es una cabecera. Si lo es, qué número puede haber en cada hueco con cifras: uno fijo
+        ("fijo", 2025) o el de la página ("pagina", desfase), con hasta dos de desfase por la portada. Así
+        "Ejercicio 5", "Ejercicio 6"… al principio de cada página no se borran."""
         if len(por_pagina) < max(3, len(paginas) * 0.6):
-            return False
-        # Lo único que puede cambiar es el número de página: avanza a la vez que la página (con hasta dos de
-        # desfase por la portada). Así "Ejercicio 5", "Ejercicio 6"… al principio de cada página no se borran.
+            return None
         numeros = [(n, [int(x) for x in re.findall(r"\d+", l)]) for n, l in por_pagina.items()]
+        huecos = []
         for i in range(len(numeros[0][1])):
             valores = {nums[i] for _, nums in numeros}
+            if len(valores) == 1:
+                huecos.append(("fijo", valores.pop()))
+                continue
             desfases = {nums[i] - n for n, nums in numeros}
-            if len(valores) > 1 and (len(desfases) > 1 or abs(desfases.pop()) > 2):
-                return False
-        return True
+            if len(desfases) > 1 or abs(next(iter(desfases))) > 2:
+                return None
+            huecos.append(("pagina", desfases.pop()))
+        return huecos
 
-    repetidas = {c for c, por_pagina in apariciones.items() if es_cabecera(por_pagina)}
-    return [[l for l in lineas if not l or clave(l) not in repetidas] for lineas in paginas]
+    repetidas = {c: h for c, por_pagina in apariciones.items() if (h := huecos_de(por_pagina)) is not None}
+    if not repetidas:
+        return paginas
+
+    def es_cabecera(linea, pagina):
+        # Una línea que es solo un número se quita únicamente si es el de ESTA página: un "10" suelto que continúa
+        # una frase, o los "1 2 3 4" de una figura, no son números de página.
+        huecos = repetidas.get(clave(linea))
+        numeros = [int(x) for x in re.findall(r"\d+", linea)]
+        return huecos is not None and all(
+            n == (v if tipo == "fijo" else pagina + v) for (tipo, v), n in zip(huecos, numeros))
+
+    # En algunas páginas dos líneas de la cabecera salen pegadas en una ("correo@centro.es ISO . V. 2025"): esa línea
+    # no se repite tal cual, pero está hecha solo de trozos de cabecera.
+    piezas = sorted((c for c in repetidas if len(re.sub(r"[\W_]+", "", c)) >= 4), key=len, reverse=True)
+
+    def solo_trozos_de_cabecera(linea):
+        resto, encontrado = clave(linea), False
+        for pieza in piezas:
+            if pieza in resto:
+                resto, encontrado = resto.replace(pieza, " "), True
+        # Tiene que haber al menos un trozo de cabecera, y no sobrar ni letras ni números ("#" es un número).
+        return encontrado and not re.search(r"[#\w]", resto)
+
+    limpias = []
+    for numero, lineas in enumerate(paginas, 1):
+        # La cabecera y el pie están en los bordes de la página: lo del medio nunca se toca.
+        posiciones = [i for i, l in enumerate(lineas) if l]
+        borde = set(posiciones[:VENTANA_CABECERA]) | set(posiciones[-VENTANA_CABECERA:])
+        limpias.append([
+            l for i, l in enumerate(lineas)
+            if not l or not (i in borde and (es_cabecera(l, numero) or solo_trozos_de_cabecera(l)))
+        ])
+    return limpias
 
 
 def _texto_pagina_pdf(pagina):

@@ -48,6 +48,43 @@ class TextoDePdf(unittest.TestCase):
         for n in range(5, 9):
             self.assertIn(f"Ejercicio {n}", texto)
 
+    # Cabecera de instituto de 6 líneas (inventada), como la de las prácticas de los PDFs reales.
+    BLOQUE = ["IES EJEMPLO", "Calle Mayor s/n", "03000 CIUDAD (PROVINCIA)", "info@centro.example",
+              "Telf: 960000000 | Fax: 960000001 www.centro.example", "ISO . V. 2025"]
+
+    def pagina_larga(self, n, cuerpo, pie_antes_de=0, pegadas=False):
+        """Una página con el título y el bloque del instituto arriba; con `pie_antes_de` el bloque sale tras el contenido
+        (salvo las últimas líneas), como hace el PDF cuando la página tiene poco texto; con `pegadas` dos líneas se unen."""
+        bloque = list(self.BLOQUE)
+        if pegadas:
+            bloque[3:6] = ["info@centro.example ISO . V. 2025"]
+        titulo = f"Tema 1 Práctica 6 - Sistema dual Página {n}"
+        if pie_antes_de:
+            return "\n".join([titulo, *cuerpo[:-pie_antes_de], *bloque, *cuerpo[-pie_antes_de:]])
+        return "\n".join([titulo, *bloque, *cuerpo])
+
+    def test_quita_cabeceras_largas_aunque_el_pie_salga_despues_del_contenido(self):
+        cuerpos = [["Abre el administrador de discos.", "Reduce el volumen C."], ["Crea un volumen nuevo.", "Ponle la letra E."],
+                   ["Asigna cuarenta gigas.", "Etiqueta el volumen como DEV."], ["Reinicia desde el disco.", "Instala el otro sistema."],
+                   ["Arranca por el volumen tres.", "Termina la instalación."], ["Abre msconfig.", "Mira la pestaña de arranque."]]
+        paginas = [self.pagina_larga(n, c, pie_antes_de=(1 if n % 2 == 0 else 0), pegadas=(n == 4))
+                   for n, c in enumerate(cuerpos, 1)]
+        texto = ia.limpiar_texto_pdf(paginas)
+        for resto in ("EJEMPLO", "Calle Mayor", "CIUDAD", "centro.example", "Telf", "ISO . V.", "Página"):
+            self.assertNotIn(resto, texto)
+        for cuerpo in cuerpos:
+            for linea in cuerpo:
+                self.assertIn(linea.rstrip("."), texto)
+
+    def test_un_numero_suelto_del_contenido_no_es_un_numero_de_pagina(self):
+        paginas = [self.pagina_larga(1, ["Portada."]),
+                   self.pagina_larga(2, ["Pon las fases en orden:", "3", "2", "4", "1"]),
+                   self.pagina_larga(3, ["Haz capturas de las particiones de Windows 11 y windows", "10"])]
+        texto = ia.limpiar_texto_pdf(paginas)
+        self.assertRegex(texto, r"3\s+2\s+4\s+1")
+        self.assertRegex(texto, r"windows\s+10")
+        self.assertNotIn("EJEMPLO", texto)
+
     def test_une_parrafos_cortados_tambien_entre_paginas(self):
         largo = "Antes de esto, para hacer más cómoda la instalación, vamos a cambiar la resolución de la ventana para poder verla a "
         paginas = [
