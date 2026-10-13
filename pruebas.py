@@ -590,6 +590,34 @@ class Actualizaciones(unittest.TestCase):
             self.assertFalse(actualizador.restaurar_anterior(log=lambda m: None))
 
 
+class EnunciadoEnPdf(unittest.TestCase):
+    """Si el enunciado está en un PDF se enseña el PDF; si está en un Word, su texto."""
+
+    def pagina(self, nombre, adjuntos):
+        tarea = {"id": "assign_9", "name": "Práctica 5", "course": "Sistemas", "kind": "tarea", "done": False, "status": "",
+                 "duedate": 1_790_000_000, "due_label": "Entrega", "summary": "", "summary_file": "Texto sacado del archivo " * 3,
+                 "summary_file_name": nombre, "attachments": adjuntos}
+        return interfaz.build_report([tarea], [], {"username": "prueba"}, [], 48)
+
+    def test_pdf_se_enseña_como_vista_previa(self):
+        pagina = self.pagina("Práctica 5.pdf", [{"filename": "Práctica 5.pdf", "path": "adjuntos/Curso 1/Tarea/Práctica 5.pdf"}])
+        self.assertIn('class="desc desc-pdf"', pagina)
+        self.assertIn('data-src="/adjuntos/Curso%201/Tarea/Pr%C3%A1ctica%205.pdf#view=FitH&amp;navpanes=0"', pagina)
+        self.assertIn('class="pdf-marco"', pagina)
+        self.assertNotIn('class="desc-body"', pagina)  # ya no se enseña el texto sacado del PDF
+        self.assertNotIn(' src="/adjuntos/', pagina)  # y el PDF no se carga hasta abrir el desplegable
+
+    def test_word_sigue_enseñando_su_texto(self):
+        pagina = self.pagina("Enunciado.docx", [{"filename": "Enunciado.docx", "path": "adjuntos/Curso/Tarea/Enunciado.docx"}])
+        self.assertNotIn("desc-pdf", pagina.split("</style>", 1)[1].split("<script", 1)[0])
+        self.assertIn("Texto sacado del archivo", pagina)
+
+    def test_sin_el_archivo_guardado_cae_al_texto(self):
+        pagina = self.pagina("Práctica 5.pdf", [])
+        self.assertNotIn('class="desc desc-pdf"', pagina)
+        self.assertIn("Texto sacado del archivo", pagina)
+
+
 class RevisionDeCuestionarios(unittest.TestCase):
     """analizar_pregunta convierte el HTML de la revisión de Aules en preguntas, opciones y respuestas."""
 

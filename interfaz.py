@@ -371,6 +371,16 @@ details.desc > summary { cursor: pointer; font-size: 13px; color: var(--accent);
 .desc-body { margin-top: 8px; padding: 12px 14px; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px;
   font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .desc-body a { color: var(--accent); }
+/* Enunciado en PDF: vista previa del archivo en vez del texto sacado de él (que repetía cabeceras y perdía el orden). */
+.pdf-caja { margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--card-2); overflow: hidden; }
+.pdf-barra { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.pdf-nombre { flex: 1 1 160px; min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--card); color: var(--muted); font-size: 12.5px; font-weight: 600; text-decoration: none;
+  transition: border-color .15s, color .15s; }
+.pdf-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pdf-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pdf-marco { display: block; width: 100%; height: min(78vh, 900px); min-height: 420px; border: 0; background: var(--card-2); }
 
 .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .file { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; text-decoration: none; color: var(--text); font-size: 13px;
@@ -502,6 +512,15 @@ details.mas[open] > .mas-btn { border-color: var(--accent); color: var(--accent)
 """
 
 REPORT_JS = """
+(function () {
+  // Enunciados en PDF: se cargan al abrir el desplegable por primera vez.
+  document.querySelectorAll('details.desc-pdf').forEach(function (d) {
+    d.addEventListener('toggle', function () {
+      var marco = d.querySelector('.pdf-marco');
+      if (d.open && marco && !marco.getAttribute('src')) marco.setAttribute('src', d.dataset.src);
+    });
+  });
+})();
 (function () {
   var rtf = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
   var fechaHoy = document.getElementById('fecha-hoy');
@@ -883,6 +902,8 @@ REPORT_JS_FIN = """
     var activo = document.activeElement;
     if (activo && (activo.tagName === 'INPUT' || activo.tagName === 'TEXTAREA') && activo.value) return true;
     if (document.querySelector('.ia-cargando') || document.querySelector('dialog[open]')) return true;
+    // Leyendo un enunciado en PDF: recargar la página lo cerraría y perderías por dónde ibas.
+    if (document.querySelector('details.desc-pdf[open]')) return true;
     var menu = document.querySelector('details.account');
     return !!(menu && menu.open);
   }
@@ -1311,6 +1332,27 @@ def _desc_html(summary, label):
     return (
         f'<details class="desc"><summary>{icon("chevron-right", 14, "chev")}{label}</summary>'
         f'<div class="desc-body">{linkify(html.escape(summary))}</div></details>'
+    )
+
+
+def _pdf_enunciado_html(a):
+    """Vista previa del PDF donde está el enunciado de la tarea, o "" si el enunciado no viene de un PDF guardado."""
+    nombre = a.get("summary_file_name") or ""
+    adjunto = next((x for x in a.get("attachments") or [] if x.get("filename") == nombre), None)
+    if not adjunto or not nombre.lower().endswith(".pdf") or not adjunto.get("path"):
+        return ""
+    url = "/" + quote(adjunto["path"].lstrip("/"))
+    seguro = html.escape(url)
+    return (
+        # El PDF solo se carga al abrir el desplegable: la página tiene muchas tareas y no se descargan todos de golpe.
+        f'<details class="desc desc-pdf" data-src="{html.escape(url + "#view=FitH&navpanes=0")}">'
+        f'<summary>{icon("chevron-right", 14, "chev")}Ver enunciado (PDF)</summary>'
+        '<div class="pdf-caja"><div class="pdf-barra">'
+        f'<span class="pdf-nombre" title="{html.escape(nombre)}">{html.escape(nombre)}</span>'
+        f'<a class="pdf-btn" href="{seguro}" target="_blank" rel="noopener">{icon("external-link", 13)}Abrir en otra pestaña</a>'
+        f'<a class="pdf-btn" href="{seguro}" download="{html.escape(nombre)}">{icon("folder", 13)}Descargar</a>'
+        "</div>"
+        f'<iframe class="pdf-marco" title="Enunciado: {html.escape(nombre)}"></iframe></div></details>'
     )
 
 
@@ -2092,8 +2134,9 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
         if a["summary"]:
             desc = _desc_html(a["summary"], "Ver descripción")
         elif a.get("summary_file"):
-            # El profe dejó el enunciado dentro del adjunto: se muestra su texto.
-            desc = _desc_html(a["summary_file"], f'Ver enunciado (de {html.escape(a["summary_file_name"])})')
+            # El profe dejó el enunciado dentro del adjunto: si es un PDF se ve el PDF; si es un Word o PowerPoint
+            # (que el navegador no enseña), su texto.
+            desc = _pdf_enunciado_html(a) or _desc_html(a["summary_file"], f'Ver enunciado (de {html.escape(a["summary_file_name"])})')
         else:
             desc = ""
 
