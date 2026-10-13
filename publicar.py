@@ -5,11 +5,16 @@ Uso:   python publicar.py 1.1.0 "Qué ha cambiado" "Otro cambio"
 Antes de nada pasa las pruebas (pruebas.py) y comprueba que la app arranca: si algo falla, no sube nada.
 Sube el código a la rama main con su etiqueta (v1.1.0), un version.json con la huella de cada archivo y el
 instalador regenerado. Solo se sube el código: el .gitignore deja fuera cuentas/, session.json, ajustes.json...
+Después crea la «Release» de GitHub con el instalador adjunto (si tienes GitHub CLI): es lo que busca la gente para
+descargar la app, y el botón del README siempre baja la última.
 """
+import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import actualizador
 import crear_instalador
@@ -17,8 +22,10 @@ import crear_instalador
 BASE_DIR = actualizador.BASE_DIR
 PERMITIDOS = set(actualizador.ARCHIVOS) | {
     "version.json", "crear_instalador.py", "publicar.py", "pruebas.py", ".gitignore", ".gitattributes", "README.md",
-    "para_compartir/Instalar Aules.bat",
+    "para_compartir/Instalar Aules.bat", "docs/descargar.svg",
 }
+# Nombre fijo del archivo en la Release: el botón del README apunta a releases/latest/download/<este nombre>.
+NOMBRE_INSTALADOR = "Instalar-Aules.bat"
 
 
 def git(*args, comprobar=True):
@@ -38,6 +45,44 @@ def comprobar_antes_de_publicar():
     error = actualizador.probar_codigo(BASE_DIR)
     if error:
         sys.exit(f"La app no arranca, no se ha publicado nada:\n{error}")
+
+
+def buscar_gh():
+    """GitHub CLI, si está instalado: en el PATH o donde lo deja winget (un terminal ya abierto no lo ve en el PATH)."""
+    ruta = shutil.which("gh")
+    if ruta:
+        return ruta
+    local = os.environ.get("LOCALAPPDATA", "")
+    for patron in (os.path.join(local, "Microsoft", "WinGet", "Links", "gh.exe"),
+                   os.path.join(local, "Microsoft", "WinGet", "Packages", "GitHub.cli_*", "bin", "gh.exe")):
+        encontrados = glob.glob(patron)
+        if encontrados:
+            return encontrados[0]
+    return None
+
+
+def crear_release(version, cambios, instalador=None):
+    """Crea la «Release» de GitHub con el instalador adjunto. Es lo que busca la gente para descargar la app y hace que
+    releases/latest/download/Instalar-Aules.bat baje siempre la última. Si algo falla solo avisa: la versión ya está subida."""
+    gh = buscar_gh()
+    if not gh:
+        print("No he creado la Release en GitHub porque falta GitHub CLI (winget install GitHub.cli y luego gh auth login). "
+              "La versión sí está publicada y las apps se actualizarán igual.")
+        return False
+    notas = "\n".join(f"- {c}" for c in cambios) + (
+        "\n\n**Instalar:** descarga `Instalar-Aules.bat` y ábrelo con doble clic. "
+        "Si ya tienes la app, no hace falta: te avisa sola y se actualiza con un botón.")
+    with tempfile.TemporaryDirectory() as carpeta:
+        copia = os.path.join(carpeta, NOMBRE_INSTALADOR)
+        shutil.copyfile(instalador or crear_instalador.SALIDA, copia)
+        r = subprocess.run([gh, "release", "create", f"v{version}", copia, "--repo", actualizador.REPO,
+                            "--title", f"Aules {version}", "--notes", notas, "--latest", "--verify-tag"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        print(f"No se pudo crear la Release en GitHub (¿has hecho gh auth login?): {(r.stderr or r.stdout).strip()}")
+        return False
+    print(f"Release creada: {r.stdout.strip()}")
+    return True
 
 
 def main():
@@ -83,7 +128,8 @@ def main():
     git("push", "-q", "origin", "HEAD:main")
     git("push", "-q", "origin", f"v{version}")
     print(f"Publicada la versión {version}. Las apps instaladas lo verán en unas horas (o al reiniciarse).")
-    print(f"Instalador para gente nueva: https://github.com/{actualizador.REPO}/raw/main/para_compartir/Instalar%20Aules.bat")
+    crear_release(version, cambios)
+    print(f"Instalador para gente nueva: https://github.com/{actualizador.REPO}/releases/latest/download/{NOMBRE_INSTALADOR}")
 
 
 if __name__ == "__main__":

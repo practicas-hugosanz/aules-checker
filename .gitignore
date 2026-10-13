@@ -17,3 +17,6 @@
 !/para_compartir/
 /para_compartir/*
 !/para_compartir/Instalar Aules.bat
+!/docs/
+/docs/*
+!/docs/descargar.svg
