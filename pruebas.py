@@ -3,13 +3,20 @@
 Uso:   python -m unittest pruebas          (publicar.py las pasa solo antes de subir nada)
 No se conectan a Aules ni tocan tus datos: todo se hace en carpetas temporales.
 """
+import base64
+import hashlib
+import html
 import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
+
+import requests
 
 import actualizador
 import aules_checker as core
@@ -731,6 +738,270 @@ class RevisionDeCuestionarios(unittest.TestCase):
         with mock.patch.object(core.http, "get") as get:
             self.assertEqual(guardar("https://otra-web.com/pluginfile.php/1/a.jpg"), "")
             get.assert_not_called()  # el token nunca va a otra web
+
+
+class UACloud(unittest.TestCase):
+    """Entrar en el Moodle de la Universidad de Alicante: usa el SSO de UACloud, no usuario y contraseña."""
+
+    def setUp(self):
+        self.carpeta = tempfile.mkdtemp(prefix="aules_ua_")
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        for parche in (mock.patch.object(core, "SESSION_PATH", os.path.join(self.carpeta, "session.json")),
+                       mock.patch.object(core, "SSO_PENDIENTES_PATH", os.path.join(self.carpeta, "sso.json")),
+                       mock.patch.object(core, "ACCOUNTS_DIR", self.carpeta), mock.patch.object(core, "log")):
+            parche.start()
+            self.addCleanup(parche.stop)
+        self.clave = max(interfaz.PORTALES_SSO)  # el curso actual
+        self.base = interfaz.PORTALES[self.clave][1]
+
+    def enlace(self, passport, token="TOKEN-de-prueba-1234567890", privado=None, base=None, esquema="aulesapp"):
+        """El enlace de vuelta que Moodle fabrica: base64(md5(sitio + passport) ::: token [::: token privado])."""
+        firma = hashlib.md5(((base or self.base) + passport).encode()).hexdigest()
+        crudo = ":::".join(x for x in (firma, token, privado) if x)
+        return f"{esquema}://token={base64.b64encode(crudo.encode()).decode()}"
+
+    def iniciar(self):
+        ident, enlace = core.sso_iniciar(self.base)
+        return ident, enlace, parse_qs(urlparse(enlace).query)["passport"][0]
+
+    SITIO = {"username": "alu1", "fullname": "Ana Prueba García", "firstname": "Ana", "userid": 5}
+
+    def test_cada_curso_tiene_su_carpeta(self):
+        self.assertEqual(os.path.basename(core.carpeta({"username": "alu1", "base_url": self.base})), f"alu1@{self.clave}")
+        vieja = {"username": "alu1", "base_url": "https://moodle2023-24.ua.es/moodle/"}
+        self.assertEqual(os.path.basename(core.carpeta(vieja)), "alu1@ua2023")  # aunque ya no salga en la lista
+        self.assertEqual(interfaz.nombre_portal("ua2023"), "Universidad de Alicante · 2023-24")
+        self.assertEqual(interfaz.portal_de("https://aules.edu.gva.es/fp"), "fp")
+        # Un dominio que solo lo parece no cuenta como de la UA.
+        self.assertEqual(interfaz.portal_de("https://moodle2026-27.ua.es.otra-web.example/moodle"), "fp")
+
+    def test_el_enlace_de_inicio_lleva_el_passport_y_el_esquema(self):
+        ident, enlace, passport = self.iniciar()
+        consulta = parse_qs(urlparse(enlace).query)
+        self.assertTrue(enlace.startswith(f"{self.base}/admin/tool/mobile/launch.php?"))
+        self.assertEqual((consulta["service"], consulta["urlscheme"]), (["moodle_mobile_app"], ["aulesapp"]))
+        self.assertRegex(passport, r"^[0-9a-f]{32}$")
+        self.assertEqual(ident, core.sso_id(passport))
+        self.assertNotEqual(self.iniciar()[2], passport)  # cada intento, un passport nuevo
+        with self.assertRaises(core.LoginError):
+            core.sso_iniciar("https://aules.edu.gva.es/fp")  # Aules (GVA) sigue entrando con usuario y contraseña
+
+    def test_acepta_el_enlace_de_vuelta_una_sola_vez(self):
+        ident, _, passport = self.iniciar()
+        with mock.patch.object(core, "call_ws", return_value=self.SITIO) as ws:
+            sesion, ident_vuelta = core.sso_completar(self.enlace(passport, token="MITOKEN-abcdefghij"))
+            self.assertEqual(ident_vuelta, ident)
+            self.assertEqual(ws.call_args[0], (self.base, "MITOKEN-abcdefghij", "core_webservice_get_site_info"))
+            self.assertEqual((sesion["username"], sesion["token"], sesion["base_url"]), ("alu1", "MITOKEN-abcdefghij", self.base))
+            self.assertEqual(core.load_session(), sesion)  # queda guardada, como con el inicio de sesión de siempre
+            with self.assertRaisesRegex(core.LoginError, "ya ha caducado"):
+                core.sso_completar(self.enlace(passport))  # el passport es de un solo uso
+
+    def test_entiende_las_formas_en_que_llega_el_enlace(self):
+        siteid = hashlib.md5(b"x").hexdigest()
+        token = ">>>???>>>???"  # su base64 lleva «+» y «/»
+        crudo = base64.b64encode(f"{siteid}:::{token}".encode()).decode()
+        self.assertTrue("+" in crudo and "/" in crudo)
+        formas = [f"aulesapp://token={crudo}", f"moodlemobile://token={crudo}", f"  aulesapp://token={crudo}\n",
+                  f"aulesapp://token={crudo.replace('+', ' ')}", f"aulesapp://token={crudo.replace('=', '%3D').replace('/', '%2F')}",
+                  f"aulesapp://token={crudo.rstrip('=')}", f"aulesapp://token={base64.b64encode(f'{siteid}:::{token}:::privado'.encode()).decode()}"]
+        for forma in formas:
+            self.assertEqual(core.sso_leer_enlace(forma), (siteid, token), forma)
+
+    def test_rechaza_lo_que_no_es_de_un_intento_suyo(self):
+        _, _, passport = self.iniciar()
+        casos = {
+            "basura": "https://moodle.example/?x=1",
+            "base64 roto": "aulesapp://token=" + "%%%@@@" * 8,
+            "sin firma": "aulesapp://token=" + base64.b64encode(b"hola:::mundo-token-largo-123").decode(),
+            "passport de otro": self.enlace("0" * 32),
+            "otro sitio": self.enlace(passport, base="https://moodle2020-21.ua.es/moodle"),
+        }
+        with mock.patch.object(core, "call_ws", side_effect=AssertionError("no debía contactar con Moodle")):
+            for nombre, enlace in casos.items():
+                with self.assertRaises(core.LoginError, msg=nombre):
+                    core.sso_completar(enlace)
+        self.assertIsNone(core.load_session())
+
+    def test_un_intento_caducado_no_vale(self):
+        _, _, passport = self.iniciar()
+        with mock.patch.object(core, "SSO_CADUCA_SEGUNDOS", -1), mock.patch.object(core, "call_ws", side_effect=AssertionError):
+            with self.assertRaisesRegex(core.LoginError, "caducado"):
+                core.sso_completar(self.enlace(passport))
+
+    def test_un_token_que_moodle_rechaza_no_deja_sesion(self):
+        ident, _, passport = self.iniciar()
+        with mock.patch.object(core, "call_ws", side_effect=core.SessionExpired("invalidtoken")):
+            with self.assertRaises(core.LoginSsoError) as error:
+                core.sso_completar(self.enlace(passport))
+        self.assertEqual(error.exception.ident, ident)
+        self.assertIsNone(core.load_session())
+
+    def test_el_enlace_de_windows_se_registra_solo_para_este_usuario(self):
+        class Clave:
+            def __init__(self, ruta):
+                self.ruta = ruta
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class Registro:
+            HKEY_CURRENT_USER, REG_SZ = "HKCU", 1
+
+            def __init__(self):
+                self.valores, self.raices = {}, set()
+
+            def OpenKey(self, raiz, ruta):
+                self.raices.add(raiz)
+                if (ruta, "") not in self.valores:
+                    raise FileNotFoundError(ruta)
+                return Clave(ruta)
+
+            def CreateKey(self, raiz, ruta):
+                self.raices.add(raiz)
+                return Clave(ruta)
+
+            def SetValue(self, clave, sub, tipo, valor):
+                self.valores[(clave.ruta, sub)] = valor
+
+            def SetValueEx(self, clave, nombre, reservado, tipo, valor):
+                self.valores[(clave.ruta, nombre)] = valor
+
+            def QueryValue(self, clave, sub):
+                return self.valores[(clave.ruta, sub or "")]
+
+        registro = Registro()
+        self.assertTrue(core.sso_registrar_esquema(registro))
+        comando = registro.valores[(r"Software\Classes\aulesapp\shell\open\command", "")]
+        self.assertTrue(comando.endswith('servidor.py" --sso "%1"'), comando)
+        self.assertEqual(registro.valores[(r"Software\Classes\aulesapp", "URL Protocol")], "")
+        self.assertEqual(registro.raices, {"HKCU"})  # nunca HKLM: no pide administrador
+        self.assertFalse(core.sso_registrar_esquema(registro))  # ya estaba bien: no se vuelve a escribir
+
+    def test_lo_que_es_solo_de_la_gva_se_apaga_fuera_de_aules(self):
+        for url in ("https://aules.edu.gva.es/fp", "https://aules.edu.gva.es/eso03", None, ""):
+            self.assertTrue(core.es_gva(url), url)
+        self.assertFalse(core.es_gva(self.base))
+
+        class Ctx:
+            course_names = {1: "Redes"}
+
+            def __init__(self, base_url):
+                self.base_url = base_url
+
+            def ws(self, funcion, params=None):
+                if funcion == "core_course_get_courses_by_field":
+                    return {"courses": [{"id": 1, "fullname": "Redes", "summary": "", "contacts": [{"id": 7}]}]}
+                return [{"id": 7, "fullname": "Ana Profe García", "firstname": "Ana", "lastname": "Profe García", "email": ""}]
+
+        gva = core.fetch_teachers(Ctx("https://aules.edu.gva.es/fp"), [{"id": 1}], {})
+        ua = core.fetch_teachers(Ctx(self.base), [{"id": 1}], {})
+        self.assertTrue(gva["profesores"][0]["email_guess"].endswith("@edu.gva.es"))
+        self.assertEqual(ua["profesores"][0]["email_guess"], "")  # el formato de correo de la GVA no vale en la UA
+
+    def test_la_pagina_de_entrada_ofrece_uacloud(self):
+        pagina = interfaz.render_login(portal=self.clave)
+        self.assertIn(f'<option value="{self.clave}" selected data-sso="1">', pagina)
+        self.assertIn('formaction="/login/sso"', pagina)
+        self.assertIn('<option value="fp">FP presencial</option>', pagina)  # las de Aules no cambian
+        espera = interfaz.render_sso_espera("Universidad de Alicante", "abc123", "https://x.example/launch.php?a=1&b=2")
+        self.assertIn("a=1&amp;b=2", espera)
+        self.assertIn('action="/login/sso/pegar"', espera)
+        self.assertIn('"abc123"', espera)
+
+
+class UACloudServidor(unittest.TestCase):
+    """El inicio de sesión de punta a punta con el servidor de la app de verdad y un Moodle de mentira."""
+
+    def setUp(self):
+        import servidor
+        self.servidor = servidor
+        self.carpeta = tempfile.mkdtemp(prefix="aules_ua_srv_")
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        self.registrar, self.revisar = mock.Mock(), mock.Mock()
+        self.http = servidor.ThreadingHTTPServer(("127.0.0.1", 0), servidor.Handler)
+        self.url = f"http://127.0.0.1:{self.http.server_port}"
+        parches = [
+            mock.patch.object(core, "SESSION_PATH", os.path.join(self.carpeta, "session.json")),
+            mock.patch.object(core, "SSO_PENDIENTES_PATH", os.path.join(self.carpeta, "sso.json")),
+            mock.patch.object(core, "ACCOUNTS_DIR", self.carpeta), mock.patch.object(core, "log"),
+            mock.patch.object(ia, "AJUSTES_PATH", os.path.join(self.carpeta, "ajustes.json")),
+            mock.patch.object(core, "sso_registrar_esquema", self.registrar),  # sin tocar el registro de Windows
+            mock.patch.object(servidor, "revisar_en_segundo_plano", self.revisar),
+            mock.patch.object(servidor, "PORT", self.http.server_port),
+            mock.patch.object(servidor, "ALLOWED_HOSTS", {f"127.0.0.1:{self.http.server_port}"}),
+            mock.patch.object(servidor, "ALLOWED_ORIGINS", {self.url}),
+            mock.patch.object(core, "call_ws", return_value=UACloud.SITIO),
+        ]
+        for parche in parches:
+            parche.start()
+            self.addCleanup(parche.stop)
+        hilo = threading.Thread(target=self.http.serve_forever, daemon=True)
+        hilo.start()
+        self.addCleanup(self.http.server_close)
+        self.addCleanup(self.http.shutdown)
+        self.clave = max(interfaz.PORTALES_SSO)
+        self.base = interfaz.PORTALES[self.clave][1]
+        self.web = requests.Session()
+
+    def empezar(self):
+        pagina = self.web.post(f"{self.url}/login/sso", data={"portal": self.clave}, headers={"Origin": self.url})
+        self.assertEqual(pagina.status_code, 200)
+        enlace = html.unescape(re.search(r'class="btn-primary sso-abrir" href="([^"]+)"', pagina.text).group(1))
+        passport = parse_qs(urlparse(enlace).query)["passport"][0]
+        return pagina, core.sso_id(passport), passport
+
+    def vuelta(self, passport, token="TOKEN-de-prueba-1234567890"):
+        firma = hashlib.md5((self.base + passport).encode()).hexdigest()
+        return "aulesapp://token=" + base64.b64encode(f"{firma}:::{token}".encode()).decode()
+
+    def estado(self, ident):
+        return self.web.get(f"{self.url}/login/sso/estado?id={ident}").json()["estado"]
+
+    def test_de_punta_a_punta(self):
+        pagina, ident, passport = self.empezar()
+        self.assertIn("Abrir UACloud", pagina.text)
+        self.registrar.assert_called_once()  # se dio de alta el enlace de Windows antes de abrir nada
+        self.assertEqual(self.estado(ident), "esperando")
+        self.servidor.modo_callback_sso(self.vuelta(passport))  # lo que ejecuta Windows con el enlace de vuelta
+        self.assertEqual(self.estado(ident), "ok")
+        self.assertEqual(core.load_session()["token"], "TOKEN-de-prueba-1234567890")
+        self.revisar.assert_called_once()  # y empieza a leer Moodle
+
+    def test_pegar_el_enlace_si_el_navegador_no_vuelve(self):
+        _, ident, passport = self.empezar()
+        respuesta = self.web.post(f"{self.url}/login/sso/pegar", data={"id": ident, "enlace": self.vuelta(passport)},
+                                  headers={"Origin": self.url}, allow_redirects=False)
+        self.assertEqual((respuesta.status_code, respuesta.headers["Location"]), (303, "/"))
+        self.assertEqual(self.estado(ident), "ok")
+        mal = self.web.post(f"{self.url}/login/sso/pegar", data={"id": ident, "enlace": "esto no es un enlace"}, headers={"Origin": self.url})
+        self.assertEqual(mal.status_code, 400)
+        self.assertIn("aulesapp://token=", mal.text)
+
+    def test_un_enlace_falso_no_estropea_el_intento_en_marcha(self):
+        _, ident, passport = self.empezar()
+        self.servidor.modo_callback_sso("aulesapp://token=" + base64.b64encode(b"cualquier-cosa:::sin-firma-valida-12345").decode())
+        self.assertEqual(self.estado(ident), "esperando")
+        self.assertIsNone(core.load_session())
+        self.servidor.modo_callback_sso(self.vuelta(passport))  # y el bueno sigue funcionando
+        self.assertEqual(self.estado(ident), "ok")
+
+    def test_solo_la_propia_app_puede_entregar_el_enlace(self):
+        _, _, passport = self.empezar()
+        for cabeceras in ({"Origin": "https://web-ajena.example"}, {}):
+            r = self.web.post(f"{self.url}/api/sso/token", json={"enlace": self.vuelta(passport)}, headers=cabeceras)
+            self.assertEqual(r.status_code, 403, cabeceras)
+        self.assertIsNone(core.load_session())
+
+    def test_el_formulario_de_usuario_y_contrasena_no_vale_para_la_ua(self):
+        with mock.patch.object(core, "login", side_effect=AssertionError("no debía intentar entrar con contraseña")):
+            r = self.web.post(f"{self.url}/login", data={"portal": self.clave, "username": "alu1", "password": "x"},
+                              headers={"Origin": self.url})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("UACloud", r.text)
 
 
 if __name__ == "__main__":

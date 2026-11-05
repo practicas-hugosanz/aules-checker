@@ -10,6 +10,17 @@ from urllib.parse import quote
 from temas import MODOS, PREVIAS_CSS, TEMAS, TEMAS_CSS, con_tema, elegido
 
 # Cada etapa tiene su propio Aules (en ESO, uno por provincia). La clave es la última parte de su dirección.
+def _portales_ua(ahora=None):
+    """El Moodle de la UA cambia cada curso (moodle2026-27.ua.es): se ofrece el de este curso y el del anterior."""
+    ahora = ahora or datetime.now()
+    inicio = ahora.year if ahora.month >= 8 else ahora.year - 1
+    return {
+        f"ua{a}": (f"Universidad de Alicante · {a}-{(a + 1) % 100:02d}",
+                   f"https://moodle{a}-{(a + 1) % 100:02d}.ua.es/moodle")
+        for a in (inicio, inicio - 1)
+    }
+
+
 PORTALES = {
     "fp": ("FP presencial", "https://aules.edu.gva.es/fp"),
     "batxillerat": ("Bachillerato", "https://aules.edu.gva.es/batxillerat"),
@@ -18,13 +29,30 @@ PORTALES = {
     "eso12": ("ESO · Castellón", "https://aules.edu.gva.es/eso12"),
     "semipresencial": ("FP semipresencial", "https://aules.edu.gva.es/semipresencial"),
     "fpa": ("Personas adultas (FPA)", "https://aules.edu.gva.es/fpa"),
+    **_portales_ua(),
 }
+# Las etapas que no aceptan usuario y contraseña de Moodle: se entra con el SSO de la universidad (UACloud).
+PORTALES_SSO = {clave for clave in PORTALES if clave.startswith("ua")}
+RE_MOODLE_UA = re.compile(r"^https://moodle(\d{4})-\d{2}\.ua\.es(?:/|$)")
 
 
 def portal_de(base_url):
     """Clave de la etapa a partir de la dirección de Aules ("fp" si no se reconoce)."""
-    clave = (base_url or "").rstrip("/").rsplit("/", 1)[-1]
-    return clave if clave in PORTALES else "fp"
+    url = (base_url or "").rstrip("/")
+    ua = RE_MOODLE_UA.match(url)
+    if ua:
+        return f"ua{ua.group(1)}"
+    clave = url.rsplit("/", 1)[-1]
+    return clave if clave in PORTALES and clave not in PORTALES_SSO else "fp"
+
+
+def nombre_portal(clave):
+    if clave in PORTALES:
+        return PORTALES[clave][0]
+    if clave.startswith("ua") and clave[2:].isdigit():  # un curso anterior que ya no sale en la lista
+        a = int(clave[2:])
+        return f"Universidad de Alicante · {a}-{(a + 1) % 100:02d}"
+    return PORTALES["fp"][0]
 
 
 DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
@@ -1037,6 +1065,18 @@ LOGIN_CSS = """
 .recordar input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
 .auth-note { display: flex; gap: 8px; align-items: flex-start; margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
 .auth-note .i { margin-top: 1px; color: var(--green); }
+.sso-bloque[hidden], #campos-usuario[hidden] { display: none; }
+.sso-texto { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; }
+.sso-nota { color: var(--muted); font-size: 12.5px; margin: 12px 0 0; }
+.sso-pasos { margin: 0 0 16px; padding-left: 20px; font-size: 14px; display: grid; gap: 6px; }
+.sso-abrir { display: flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; margin-bottom: 14px; }
+.sso-estado { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+.sso-estado .i { color: var(--accent); flex: none; }
+.sso-estado.error { color: var(--red); }
+.sso-pegar { margin: 14px 0; font-size: 13.5px; }
+.sso-pegar summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+.sso-pegar textarea { width: 100%; min-height: 76px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--card-2); color: var(--text); font: inherit; font-size: 13px; resize: vertical; }
 """
 
 AJUSTES_CSS = """
@@ -2428,7 +2468,7 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
 <div class="wrap" id="informe" data-firma="{html.escape(firma)}">
   <div class="hero">
     <div>
-      <p class="eyebrow" id="fecha-hoy">Aules · {html.escape(PORTALES[portal_de(session.get("base_url"))][0])}</p>
+      <p class="eyebrow" id="fecha-hoy">Aules · {html.escape(nombre_portal(portal_de(session.get("base_url"))))}</p>
       <h1>{greeting}</h1>
       <div class="updated"><span class="dot"></span>Actualizado <span id="updated-rel" data-ts="{int(now_ts)}">ahora</span> · <span id="updated-abs">{now.strftime('%d/%m %H:%M')}</span></div>
     </div>
@@ -2520,48 +2560,73 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
 def render_login(error="", username="", can_cancel=False, portal="fp"):
     alert = f'<div class="alert" role="alert">{icon("alert-circle")}<span>{html.escape(error)}</span></div>' if error else ""
     cancel = f'<a class="btn-link" href="/">{icon("arrow-left", 14)}Volver a mi cuenta actual</a>' if can_cancel else ""
+    marca_sso = ' data-sso="1"'
     opciones_portal = "".join(
-        f'<option value="{clave}"{" selected" if clave == portal else ""}>{html.escape(nombre)}</option>'
+        f'<option value="{clave}"{" selected" if clave == portal else ""}{marca_sso if clave in PORTALES_SSO else ""}>{html.escape(nombre)}</option>'
         for clave, (nombre, _) in PORTALES.items()
     )
     body = f"""<div class="auth">
   <div class="auth-card">
     <div class="brand"><span class="brand-mark">{icon("book-open", 20)}</span>Aules · Resumen</div>
     <h1>{'Cambiar de cuenta' if can_cancel else 'Inicia sesión'}</h1>
-    <p class="auth-sub">Entra con tu usuario y contraseña de Aules.</p>
+    <p class="auth-sub" id="login-sub">Entra con tu usuario y contraseña de Aules.</p>
     {alert}
     <form method="post" action="/login" id="login-form">
       <label class="field"><span>Etapa</span>
-        <div class="input select">{icon("graduation-cap")}<select name="portal">{opciones_portal}</select></div>
+        <div class="input select">{icon("graduation-cap")}<select name="portal" id="portal">{opciones_portal}</select></div>
       </label>
-      <label class="field"><span>Usuario</span>
-        <div class="input">{icon("user")}<input name="username" autocomplete="username" required autofocus value="{html.escape(username)}"></div>
-      </label>
-      <label class="field"><span>Contraseña</span>
-        <div class="input">{icon("lock")}<input name="password" type="password" autocomplete="current-password" required>
-          <button type="button" class="toggle" aria-label="Mostrar contraseña">{icon("eye")}</button></div>
-      </label>
-      <label class="recordar"><input type="checkbox" name="recordar" value="1" checked>
-        <span>Volver a entrar solo si Aules cierra la sesión</span></label>
-      <button class="btn-primary" type="submit">Entrar</button>
+      <div id="campos-usuario">
+        <label class="field"><span>Usuario</span>
+          <div class="input">{icon("user")}<input name="username" autocomplete="username" required autofocus value="{html.escape(username)}"></div>
+        </label>
+        <label class="field"><span>Contraseña</span>
+          <div class="input">{icon("lock")}<input name="password" type="password" autocomplete="current-password" required>
+            <button type="button" class="toggle" aria-label="Mostrar contraseña">{icon("eye")}</button></div>
+        </label>
+        <label class="recordar"><input type="checkbox" name="recordar" value="1" checked>
+          <span>Volver a entrar solo si Aules cierra la sesión</span></label>
+        <button class="btn-primary" type="submit" id="btn-entrar">Entrar</button>
+      </div>
+      <div class="sso-bloque" id="sso-bloque" hidden>
+        <p class="sso-texto"><strong>Opción en pruebas.</strong> Esta universidad usa <strong>UACloud</strong> para iniciar sesión. Se abrirá su página en el navegador
+          para que te identifiques allí: la app nunca ve tu contraseña, solo recibe un token de sesión.</p>
+        <button class="btn-primary" type="submit" formaction="/login/sso" formnovalidate id="btn-sso">Entrar con UACloud</button>
+        <p class="sso-nota">La primera vez, Windows recordará el enlace «aulesapp://» (solo para tu usuario, sin administrador) para
+          que el navegador pueda devolver el acceso a esta app. Se quita al desinstalarla.</p>
+      </div>
     </form>
     {cancel}
-    <p class="auth-note">{icon("shield-check", 14)}<span>Con la casilla marcada, la contraseña se guarda cifrada con tu usuario de Windows (solo tú, en este equipo, puedes descifrarla) y se borra al cerrar sesión. Sin marcarla, solo se guarda un token de sesión.</span></p>
+    <p class="auth-note" id="nota-contrasena">{icon("shield-check", 14)}<span>Con la casilla marcada, la contraseña se guarda cifrada con tu usuario de Windows (solo tú, en este equipo, puedes descifrarla) y se borra al cerrar sesión. Sin marcarla, solo se guarda un token de sesión.</span></p>
   </div>
 </div>"""
     js = """
 (function () {
-  var f = document.getElementById('login-form'), b = f.querySelector('.btn-primary');
+  var f = document.getElementById('login-form');
   var t = f.querySelector('.toggle'), p = f.querySelector('input[name=password]');
+  var sel = document.getElementById('portal'), campos = document.getElementById('campos-usuario');
+  var sso = document.getElementById('sso-bloque'), sub = document.getElementById('login-sub');
+  var nota = document.getElementById('nota-contrasena');
   var EYE = __EYE__, EYE_OFF = __EYE_OFF__, LOADER = __LOADER__;
+  // Las etapas con UACloud no piden usuario ni contraseña: se entra por el navegador de la universidad.
+  function cambiarEtapa() {
+    var esSso = sel.options[sel.selectedIndex].dataset.sso === '1';
+    campos.hidden = esSso;
+    sso.hidden = !esSso;
+    nota.hidden = esSso;
+    f.elements.username.required = f.elements.password.required = !esSso;
+    sub.textContent = esSso ? 'Esta etapa entra con tu cuenta de UACloud.' : 'Entra con tu usuario y contraseña de Aules.';
+  }
+  sel.addEventListener('change', cambiarEtapa);
+  cambiarEtapa();
   t.addEventListener('click', function () {
     var show = p.type === 'password';
     p.type = show ? 'text' : 'password';
     t.innerHTML = show ? EYE_OFF : EYE;
     t.setAttribute('aria-label', show ? 'Ocultar contraseña' : 'Mostrar contraseña');
   });
-  f.addEventListener('submit', function () {
-    setTimeout(function () { b.disabled = true; b.innerHTML = LOADER + 'Entrando…'; }, 0);
+  f.addEventListener('submit', function (e) {
+    var b = e.submitter || f.querySelector('.btn-primary');
+    setTimeout(function () { b.disabled = true; b.innerHTML = LOADER + (b.id === 'btn-sso' ? 'Preparando…' : 'Entrando…'); }, 0);
   });
 })();
 """
@@ -2571,6 +2636,53 @@ def render_login(error="", username="", can_cancel=False, portal="fp"):
         .replace("__LOADER__", json.dumps(icon("loader", 18, "spin")))
     )
     return _page("Aules · Iniciar sesión", body, LOGIN_CSS, js)
+
+
+def render_sso_espera(nombre, ident, enlace, error=""):
+    """Mientras te identificas en UACloud: el botón que abre su página y la espera a que Windows devuelva el acceso."""
+    alerta = f'<div class="alert" role="alert">{icon("alert-circle")}<span>{html.escape(error)}</span></div>' if error else ""
+    body = f"""<div class="auth">
+  <div class="auth-card">
+    <div class="brand"><span class="brand-mark">{icon("book-open", 20)}</span>Aules · Resumen</div>
+    <h1>Entra con UACloud</h1>
+    <p class="auth-sub">{html.escape(nombre)}</p>
+    {alerta}
+    <ol class="sso-pasos">
+      <li>Pulsa el botón: se abre la página de la universidad en otra pestaña.</li>
+      <li>Identifícate allí con tu cuenta de UACloud.</li>
+      <li>Cuando el navegador pregunte si abre <strong>Aules</strong>, di que sí.</li>
+    </ol>
+    <a class="btn-primary sso-abrir" href="{html.escape(enlace)}" target="_blank" rel="noopener">{icon("external-link", 16)}Abrir UACloud</a>
+    <p class="sso-estado" id="sso-estado" role="status">{icon("loader", 18, "spin")}<span>Esperando a que termines de iniciar sesión…</span></p>
+    <details class="sso-pegar"{" open" if error else ""}>
+      <summary>¿El navegador no vuelve a la app?</summary>
+      <p>Copia el enlace al que te lleva al terminar (empieza por <code>aulesapp://token=</code>) y pégalo aquí.</p>
+      <form method="post" action="/login/sso/pegar">
+        <input type="hidden" name="id" value="{html.escape(ident)}">
+        <textarea name="enlace" placeholder="aulesapp://token=…" required spellcheck="false"></textarea>
+        <button class="btn-primary" type="submit">Continuar</button>
+      </form>
+    </details>
+    <a class="btn-link" href="/login">{icon("arrow-left", 14)}Cancelar</a>
+  </div>
+</div>"""
+    js = """
+(function () {
+  var id = __ID__, caja = document.getElementById('sso-estado'), texto = caja.querySelector('span'), t0 = Date.now();
+  async function mirar() {
+    try {
+      var r = await fetch('/login/sso/estado?id=' + encodeURIComponent(id), { cache: 'no-store' });
+      var d = await r.json();
+      if (d.estado === 'ok') { texto.textContent = 'Listo. Entrando…'; location.href = '/'; return; }
+      if (d.estado === 'error') { caja.classList.add('error'); texto.textContent = d.mensaje || 'No se pudo iniciar sesión.'; return; }
+    } catch (e) {}
+    if (Date.now() - t0 > 15 * 60 * 1000) { caja.classList.add('error'); texto.textContent = 'Se acabó el tiempo. Vuelve a empezar desde «Cancelar».'; return; }
+    setTimeout(mirar, 1500);
+  }
+  mirar();
+})();
+""".replace("__ID__", json.dumps(ident))
+    return _page("Aules · UACloud", body, LOGIN_CSS, js)
 
 
 MATERIALES_CSS = """

@@ -111,6 +111,8 @@ choice /c SN /m "  Quieres continuar"
 if errorlevel 2 exit /b 0
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name like 'python%%'\" | Where-Object { $_.CommandLine -like ('*' + $env:DEST + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>nul
 powershell -NoProfile -Command "foreach ($p in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Aules.lnk'), (Join-Path ([Environment]::GetFolderPath('Programs')) 'Aules.lnk'), (Join-Path ([Environment]::GetFolderPath('Startup')) 'Aules (segundo plano).lnk'))) { Remove-Item -LiteralPath $p -ErrorAction SilentlyContinue }"
+rem Quita el enlace aulesapp:// que se registra al entrar con UACloud (solo existe para este usuario).
+reg delete "HKCU\Software\Classes\aulesapp" /f >nul 2>nul
 timeout /t 2 >nul
 rmdir /s /q "%DEST%"
 echo.

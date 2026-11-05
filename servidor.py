@@ -2,6 +2,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import sys
 import threading
 import time
@@ -27,6 +28,10 @@ MAX_BODY_ENTREGA = 80_000_000
 CHECK_EVERY_SECONDS = 90
 
 check_lock = threading.Lock()
+# Intentos de inicio de sesión con UACloud: id -> {estado: esperando|ok|error, mensaje, enlace, nombre, ts}
+sso_estado = {}
+sso_lock = threading.Lock()
+RE_ENLACE_SSO = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://token=[A-Za-z0-9+/=%_\-]{20,4000}")
 ia_lock = threading.Lock()
 
 
@@ -86,6 +91,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             portal = interfaz.portal_de(session.get("base_url")) if session else "fp"
             return self._send(200, interfaz.render_login(can_cancel=session is not None, portal=portal))
+        if path == "/login/sso/estado":
+            ident = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            info = sso_estado.get(ident) or {}
+            return self._json(200, {"estado": info.get("estado", "esperando"), "mensaje": info.get("mensaje", "")})
         if not session:
             return self._redirect("/login")
         if path == "/ajustes":
@@ -215,6 +224,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/login":
             return self._post_login()
+        if path == "/login/sso":
+            return self._post_login_sso()
+        if path == "/login/sso/pegar":
+            return self._post_sso_pegar()
+        if path == "/api/sso/token":
+            return self._post_sso_token()
         if path == "/logout":
             actual = core.load_session()
             if actual:
@@ -253,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
         portal = form.get("portal", ["fp"])[0]
         portal = portal if portal in interfaz.PORTALES else "fp"
         can_cancel = core.load_session() is not None
+        if portal in interfaz.PORTALES_SSO:
+            return self._send(400, interfaz.render_login("Esta etapa entra con UACloud: pulsa «Entrar con UACloud».", "", can_cancel, portal))
         try:
             session = core.login(username, password, interfaz.PORTALES[portal][1])
         except core.LoginError as e:
@@ -270,6 +287,56 @@ class Handler(BaseHTTPRequestHandler):
         # Aules se revisa por detrás (esperando a la revisión automática si estaba en marcha con otra cuenta).
         revisar_en_segundo_plano(session, esperar=True)
         self._redirect("/")
+
+    def _post_login_sso(self):
+        form = parse_qs(self._body())
+        portal = form.get("portal", [""])[0]
+        if portal not in interfaz.PORTALES_SSO:
+            return self._redirect("/login")
+        can_cancel = core.load_session() is not None
+        nombre, base_url = interfaz.PORTALES[portal]
+        try:
+            core.sso_registrar_esquema()
+            ident, enlace = core.sso_iniciar(base_url)
+        except (OSError, ImportError) as e:
+            core.log(f"No se pudo preparar el inicio de sesión con UACloud: {e}")
+            return self._send(500, interfaz.render_login("No se pudo preparar el acceso con UACloud en este equipo.", "", can_cancel, portal))
+        with sso_lock:
+            for viejo in [k for k, v in sso_estado.items() if time.time() - v.get("ts", 0) > 3600]:
+                del sso_estado[viejo]
+            sso_estado[ident] = {"estado": "esperando", "mensaje": "", "enlace": enlace, "nombre": nombre, "ts": time.time()}
+        self._send(200, interfaz.render_sso_espera(nombre, ident, enlace))
+
+    def _post_sso_pegar(self):
+        """Si el navegador no devolvió el acceso solo, se pega aquí el enlace «aulesapp://token=…»."""
+        form = parse_qs(self._body())
+        ident = form.get("id", [""])[0]
+        info = sso_estado.get(ident)
+        if not info:
+            return self._redirect("/login")
+        try:
+            completar_sso(form.get("enlace", [""])[0])
+        except core.LoginError as e:
+            return self._send(400, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], str(e)))
+        except requests.RequestException:
+            return self._send(502, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], "No se pudo conectar con Moodle. Inténtalo de nuevo."))
+        self._redirect("/")
+
+    def _post_sso_token(self):
+        """Lo llama el propio proceso que lanza Windows con el enlace de vuelta (ver modo_callback_sso)."""
+        try:
+            datos = json.loads(self._body() or "{}")
+        except ValueError:
+            return self._json(400, {"error": "Petición mal formada."})
+        try:
+            completar_sso(str(datos.get("enlace") or ""))
+        except core.LoginError as e:
+            core.log(f"Inicio de sesión con UACloud rechazado: {e}")
+            return self._json(400, {"error": str(e)})
+        except requests.RequestException as e:
+            core.log(f"No se pudo terminar el inicio de sesión con UACloud: {e}")
+            return self._json(502, {"error": "No se pudo conectar con Moodle."})
+        self._json(200, {"ok": True})
 
     def _post_ajustes(self):
         form = parse_qs(self._body(), keep_blank_values=True)
@@ -601,6 +668,38 @@ def buscar_actualizacion_en_segundo_plano():
     threading.Thread(target=buscar, daemon=True).start()
 
 
+def completar_sso(enlace):
+    """Termina un inicio de sesión con UACloud: guarda la sesión y empieza a leer Moodle."""
+    try:
+        session, ident = core.sso_completar(enlace)
+    except core.LoginSsoError as e:
+        # Solo se marca el error del intento si el enlace era de uno de verdad (llevaba su firma): así una web
+        # cualquiera que lance «aulesapp://token=basura» no puede estropear un inicio de sesión que está en marcha.
+        if e.ident and e.ident in sso_estado:
+            with sso_lock:
+                sso_estado[e.ident].update(estado="error", mensaje=str(e))
+        raise
+    with sso_lock:
+        sso_estado.setdefault(ident, {"ts": time.time()}).update(estado="ok", mensaje="")
+    revisar_en_segundo_plano(session, esperar=True)
+    return session
+
+
+def modo_callback_sso(enlace):
+    """Windows ejecuta esto cuando el navegador abre «aulesapp://token=…»: le pasa el enlace a la app y termina."""
+    if not RE_ENLACE_SSO.fullmatch(enlace or ""):
+        return
+    destino = f"http://{HOST}:{PORT}/api/sso/token"
+    for intento in range(30):
+        try:
+            requests.post(destino, json={"enlace": enlace}, headers={"Origin": f"http://{HOST}:{PORT}"}, timeout=90)
+            return
+        except requests.ConnectionError:
+            if intento == 0:
+                core.start_server_in_background()  # la app no estaba abierta: se arranca y se reintenta
+            time.sleep(1)
+
+
 def comprobar_periodicamente():
     """Revisa Aules cada minuto y medio mientras la app está abierta."""
     ultimo_error = None
@@ -645,6 +744,9 @@ def already_running():
 
 
 def main():
+    if "--sso" in sys.argv:
+        i = sys.argv.index("--sso")
+        return modo_callback_sso(sys.argv[i + 1] if len(sys.argv) > i + 1 else "")
     url = f"http://{HOST}:{PORT}/"
     if already_running():
         if "--sin-navegador" not in sys.argv:

@@ -1,9 +1,11 @@
+import base64
 import ctypes
 import hashlib
 import html
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -13,13 +15,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from datetime import date, datetime, time as hora_del_dia, timedelta
+from urllib.parse import unquote, urlencode, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import ia
-from interfaz import PORTALES, asignatura_a_curso, build_report, format_due, portal_de
+from interfaz import PORTALES, PORTALES_SSO, asignatura_a_curso, build_report, format_due, portal_de
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASE_URL = "https://aules.edu.gva.es/fp"
@@ -285,6 +288,147 @@ def login(username, password, base_url=DEFAULT_BASE_URL):
     save_session(session)
     log(f"Sesión iniciada como {username}")
     return session
+
+
+def es_gva(base_url):
+    """Tareas "GVA", calendario del centro, horario de Tutoría y correos @edu.gva.es son cosas de Aules (GVA)."""
+    return not base_url or (urlparse(base_url).hostname or "") == "aules.edu.gva.es"
+
+
+# ---------- inicio de sesión por navegador (UACloud, de la Universidad de Alicante) ----------
+# Su Moodle no acepta usuario y contraseña: se entra con el SSO de la universidad. Se hace como la app oficial de Moodle:
+# se abre en el navegador launch.php con un «passport» secreto; al terminar de identificarte, Moodle redirige a
+# «esquema://token=BASE64» y Windows le pasa ese enlace a esta app. La app no ve nunca la contraseña de la universidad.
+
+ESQUEMA_SSO = "aulesapp"
+SSO_PENDIENTES_PATH = os.path.join(BASE_DIR, "sso_pendientes.json")
+SSO_CADUCA_SEGUNDOS = 15 * 60  # lo que Moodle recuerda los datos del inicio de sesión
+RE_TOKEN_SSO = re.compile(r"token=([A-Za-z0-9+/=%_\- ]{20,4000})")
+_sso_lock = threading.Lock()
+
+
+class LoginSsoError(LoginError):
+    """Un fallo del inicio de sesión por navegador. `ident` dice de qué intento era, si se sabe."""
+
+    def __init__(self, mensaje, ident=""):
+        super().__init__(mensaje)
+        self.ident = ident
+
+
+def sso_id(passport):
+    return hashlib.sha256(passport.encode("utf-8")).hexdigest()[:16]
+
+
+def _sso_pendientes():
+    try:
+        with open(SSO_PENDIENTES_PATH, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(datos, dict):
+        return {}
+    ahora = datetime.now().timestamp()
+    return {p: d for p, d in datos.items() if isinstance(d, dict) and ahora - d.get("ts", 0) < SSO_CADUCA_SEGUNDOS}
+
+
+def sso_iniciar(base_url):
+    """Prepara un inicio de sesión por navegador. Devuelve (id del intento, enlace que hay que abrir en el navegador)."""
+    if base_url not in {PORTALES[c][1] for c in PORTALES_SSO}:
+        raise LoginError("Esta etapa no entra con UACloud.")
+    passport = secrets.token_hex(16)
+    with _sso_lock:
+        pendientes = _sso_pendientes()
+        pendientes[passport] = {"base_url": base_url, "ts": datetime.now().timestamp()}
+        write_atomic(SSO_PENDIENTES_PATH, json.dumps(pendientes))
+    parametros = urlencode({"service": "moodle_mobile_app", "passport": passport, "urlscheme": ESQUEMA_SSO})
+    return sso_id(passport), f"{base_url}/admin/tool/mobile/launch.php?{parametros}"
+
+
+def sso_leer_enlace(texto):
+    """Del enlace de vuelta («aulesapp://token=…») saca el identificador del sitio y el token de Moodle."""
+    encontrado = RE_TOKEN_SSO.search((texto or "").strip())
+    if not encontrado:
+        raise LoginSsoError("Ese enlace no lleva el acceso de UACloud: tiene que empezar por «aulesapp://token=».")
+    # Moodle no codifica el base64: los navegadores pueden cambiar «+» por un espacio o «=» por «%3D».
+    crudo = unquote(encontrado.group(1)).strip().replace(" ", "+")
+    try:
+        datos = base64.b64decode(crudo + "=" * (-len(crudo) % 4), validate=True).decode("utf-8")
+    except ValueError:  # base64 mal formado o texto que no es UTF-8
+        raise LoginSsoError("El enlace de UACloud está incompleto o dañado. Cópialo entero y vuelve a pegarlo.") from None
+    partes = datos.split(":::")
+    if len(partes) < 2 or not re.fullmatch(r"[0-9a-f]{32}", partes[0]) or not partes[1].strip():
+        raise LoginSsoError("El enlace de UACloud no tiene el formato que esperaba esta app.")
+    return partes[0], partes[1].strip()
+
+
+def sso_completar(enlace):
+    """Termina un inicio de sesión por navegador con el enlace de vuelta. Devuelve (sesión, id del intento)."""
+    siteid, token = sso_leer_enlace(enlace)
+    # Moodle firma el enlace con md5(dirección del sitio + passport): solo vale si es de un intento que empezó esta app.
+    with _sso_lock:
+        pendientes = _sso_pendientes()
+        passport = next((p for p, d in pendientes.items()
+                         if hashlib.md5((d["base_url"] + p).encode("utf-8"), usedforsecurity=False).hexdigest() == siteid), None)
+        if passport is None:
+            raise LoginSsoError("Ese enlace no es de un inicio de sesión que haya empezado esta app, o ya ha caducado. "
+                                "Vuelve a pulsar «Entrar con UACloud».")
+        base_url = pendientes[passport]["base_url"]
+    ident = sso_id(passport)
+    try:
+        info = call_ws(base_url, token, "core_webservice_get_site_info")
+    except SessionExpired:
+        raise LoginSsoError("UACloud ha devuelto un acceso que Moodle no acepta. Vuelve a intentarlo.", ident) from None
+    except RuntimeError as e:
+        raise LoginSsoError(f"Moodle no ha dejado entrar: {e}", ident) from None
+    username = (info.get("username") or "").strip() or str(info.get("userid") or "")
+    if not username:
+        raise LoginSsoError("Moodle no ha dicho quién eres. Vuelve a intentarlo.", ident)
+    session = {
+        "base_url": base_url,
+        "username": username,
+        "token": token,
+        "fullname": info.get("fullname") or username,
+        "firstname": info.get("firstname", ""),
+        "acceso": "uacloud",
+    }
+    save_session(session)
+    with _sso_lock:  # el passport es de un solo uso
+        pendientes = _sso_pendientes()
+        pendientes.pop(passport, None)
+        write_atomic(SSO_PENDIENTES_PATH, json.dumps(pendientes))
+    log(f"Sesión iniciada por UACloud como {username}")
+    return session, ident
+
+
+def comando_esquema():
+    """La orden que Windows ejecuta cuando el navegador abre «aulesapp://…»."""
+    python = sys.executable
+    sin_consola = python[: -len("python.exe")] + "pythonw.exe" if python.lower().endswith("python.exe") else python
+    if os.path.exists(sin_consola):
+        python = sin_consola
+    return f'"{python}" "{os.path.join(BASE_DIR, "servidor.py")}" --sso "%1"'
+
+
+def sso_registrar_esquema(registro=None):
+    """Da de alta «aulesapp://» en Windows solo para este usuario (HKCU, sin administrador). Es lo que permite que el
+    navegador le devuelva a la app el acceso. Devuelve True si ha escrito algo y False si ya estaba bien."""
+    if registro is None:
+        import winreg as registro
+    comando = comando_esquema()
+    raiz = rf"Software\Classes\{ESQUEMA_SSO}"
+    try:
+        with registro.OpenKey(registro.HKEY_CURRENT_USER, rf"{raiz}\shell\open\command") as clave:
+            if registro.QueryValue(clave, None) == comando:
+                return False
+    except OSError:
+        pass
+    with registro.CreateKey(registro.HKEY_CURRENT_USER, raiz) as clave:
+        registro.SetValue(clave, "", registro.REG_SZ, "URL:Aules")
+        registro.SetValueEx(clave, "URL Protocol", 0, registro.REG_SZ, "")
+    with registro.CreateKey(registro.HKEY_CURRENT_USER, rf"{raiz}\shell\open\command") as clave:
+        registro.SetValue(clave, "", registro.REG_SZ, comando)
+    log("Registrado el enlace aulesapp:// para el inicio de sesión con UACloud")
+    return True
 
 
 def _rutas_foto(session):
@@ -1721,7 +1865,8 @@ def fetch_teachers(ctx, courses, correos):
                 "courses": sorted(asignaturas.get(u["id"], [])),
                 "email": correo,
                 "email_origin": origen,
-                "email_guess": "" if correo else correo_deducido(u.get("firstname"), u.get("lastname")),
+                # El formato de correo de la GVA no vale para otras instituciones: ahí no se deduce.
+                "email_guess": "" if correo or not es_gva(ctx.base_url) else correo_deducido(u.get("firstname"), u.get("lastname")),
                 "message_url": f"{ctx.base_url}/message/index.php?id={u['id']}",
             }
         )
@@ -2603,7 +2748,8 @@ def run_check(session):
     def material_y_calendario():
         materiales = fetch_materials(ctx, courses, encontradas, correos)
         try:
-            actualizar_calendario(session, acc_dir, materiales)
+            if es_gva(base_url):  # el calendario del centro es de los institutos de la GVA
+                actualizar_calendario(session, acc_dir, materiales)
         except Exception as e:
             log(f"No se pudo leer el calendario escolar: {e}")
         return materiales
@@ -2611,13 +2757,13 @@ def run_check(session):
     # Cada parte es independiente: se piden todas a la vez y se tarda lo que la más lenta, no la suma.
     with ThreadPoolExecutor(7) as ex:
         f_tareas = ex.submit(fetch_assignments, ctx, "assign")
-        f_gva = ex.submit(ctx.optional, "tareas GVA", lambda: fetch_assignments(ctx, "assigngva"))
+        f_gva = ex.submit(ctx.optional, "tareas GVA", lambda: fetch_assignments(ctx, "assigngva")) if es_gva(base_url) else None
         f_cuestionarios = ex.submit(ctx.optional, "cuestionarios", lambda: fetch_quizzes(ctx))
         f_foros = ex.submit(ctx.optional, "foros", lambda: fetch_forum_posts(ctx))
         f_notas = ex.submit(ctx.optional, "notas", lambda: fetch_grades(ctx, courses, progreso))
         f_mensajes = ex.submit(ctx.optional, "mensajes", lambda: fetch_messages(ctx))
         f_material = ex.submit(ctx.optional, "material de los cursos", material_y_calendario) if toca_material else None
-        items = f_tareas.result() + (f_gva.result() or []) + (f_cuestionarios.result() or [])
+        items = f_tareas.result() + ((f_gva.result() or []) if f_gva else []) + (f_cuestionarios.result() or [])
         posts, notas, mensajes = f_foros.result(), f_notas.result(), f_mensajes.result()
         materiales = f_material.result() if f_material else None
     if toca_material:

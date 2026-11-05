@@ -52,6 +52,16 @@ Sirve para **FP presencial, Bachillerato, ESO (Valencia, Alicante y Castellón),
 - **Temas:** siete estilos para la app (Clásico, Suizo, Brutalista, Terminal, Cuaderno, Cristal y Retro 95), en claro u oscuro.
 - **IA opcional:** resumen de cada tarea y borradores, con tu propia clave de un proveedor de IA.
 
+### Universidad de Alicante (UACloud) · en pruebas
+
+También puedes entrar al Moodle de la UA eligiendo «Universidad de Alicante» en la lista de etapas. Su Moodle no acepta usuario y contraseña, sino el inicio de sesión de UACloud, así que la app **no te pide la contraseña**: abre la página de la universidad en tu navegador, te identificas allí y Moodle le devuelve a la app un token de sesión.
+
+- La primera vez, Windows recordará el enlace `aulesapp://` (solo para tu usuario, sin administrador) para que el navegador pueda devolver ese acceso a la app. El desinstalador lo quita.
+- Si el navegador no vuelve a la app, hay un apartado donde puedes pegar el enlace al que te lleva al terminar.
+- La UA tiene un Moodle por curso (`moodle2026-27.ua.es`), así que salen el de este curso y el anterior.
+- Lo que es solo de la GVA (tareas «GVA», calendario del centro, horario de Tutoría y correos `@edu.gva.es` deducidos) se apaga en la UA.
+- Cuando el token caduque, tendrás que volver a identificarte: no se guarda ninguna contraseña con la que renovarlo solo.
+
 ## Actualizaciones
 
 Cuando haya una versión nueva, la app te avisará con la lista de cambios y un botón «Actualizar». Antes de instalarla, la prueba en tu ordenador: si no arranca, no se instala y tu app sigue igual. Tus datos y ajustes se mantienen.
