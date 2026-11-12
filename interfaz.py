@@ -309,20 +309,23 @@ details[open] > summary > .chev-down { transform: rotate(180deg); }
 .next-due .due-rel { font-weight: 700; font-size: 15px; background: rgba(255,255,255,.2); color: #fff; padding: 4px 12px; }
 .next-due .due-abs { color: rgba(255,255,255,.85); font-size: 12.5px; }
 
-.ahora { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; background: var(--card); border: 1px solid var(--border);
+/* minmax(0, 1fr): con «1fr» a secas una columna no baja del ancho de su contenido, y un nombre de tarea largo la ensanchaba
+   hasta salirse del recuadro (y de la página). */
+.ahora { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; background: var(--card); border: 1px solid var(--border);
   border-radius: 18px; box-shadow: var(--shadow); padding: 16px 20px; margin-bottom: 16px; text-decoration: none; color: inherit; }
 .ahora .ahora-bloque + .ahora-bloque { border-left: 1px solid var(--border); padding-left: 16px; }
 .ahora-label { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; letter-spacing: .07em;
   text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
 .ahora-asig { font-weight: 650; font-size: 16px; line-height: 1.3; overflow-wrap: anywhere; }
-.ahora-info { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.ahora .ahora-bloque { min-width: 0; }
+.ahora-info { font-size: 12.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 a.ahora:hover { border-color: var(--accent); }
 .ahora-ver { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); letter-spacing: 0; text-transform: none; font-weight: 600; }
 .ahora.en-clase #ahora-asig { color: var(--accent); }
 .ahora.en-recreo #ahora-asig { color: var(--green); }
 .sin-horario:hover { border-color: var(--accent); }
 @media (max-width: 680px) {
-  .ahora { grid-template-columns: 1fr; gap: 12px; }
+  .ahora { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .ahora .ahora-bloque + .ahora-bloque { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: 12px; }
 }
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; position: sticky; top: 0; z-index: 5;
@@ -490,8 +493,10 @@ details.notas .notas-link { margin: 4px 12px 8px; }
 .mensaje-texto { color: var(--text); white-space: pre-wrap; }
 .mensaje-texto a { color: var(--accent); }
 .ahora-tareas { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 12px; font-weight: 600;
-  padding: 3px 9px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); max-width: 100%; }
-.ahora-tareas span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  padding: 3px 9px; border-radius: 12px; background: var(--blue-soft); color: var(--blue); max-width: 100%; min-width: 0; }
+/* Un nombre largo ocupa hasta dos líneas (el texto entero sale al pasar el ratón) en vez de una sola que no cabe. */
+.ahora-tareas span { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; }
 .ahora-tareas.examen { background: var(--orange-soft); color: var(--orange); }
 .ahora-tareas.ok { background: var(--green-soft); color: var(--green); }
 
@@ -2591,8 +2596,8 @@ def render_login(error="", username="", can_cancel=False, portal="fp"):
         <p class="sso-texto"><strong>Opción en pruebas.</strong> Esta universidad usa <strong>UACloud</strong> para iniciar sesión. Se abrirá su página en el navegador
           para que te identifiques allí: la app nunca ve tu contraseña, solo recibe un token de sesión.</p>
         <button class="btn-primary" type="submit" formaction="/login/sso" formnovalidate id="btn-sso">Entrar con UACloud</button>
-        <p class="sso-nota">La primera vez, Windows recordará el enlace «aulesapp://» (solo para tu usuario, sin administrador) para
-          que el navegador pueda devolver el acceso a esta app. Se quita al desinstalarla.</p>
+        <p class="sso-nota">La primera vez, Windows recordará el enlace «moodlemobile://» (el que usa Moodle para volver a una app;
+          solo para tu usuario, sin administrador) para que el navegador pueda devolver el acceso a esta app. Se quita al desinstalarla.</p>
       </div>
     </form>
     {cancel}
@@ -2638,9 +2643,14 @@ def render_login(error="", username="", can_cancel=False, portal="fp"):
     return _page("Aules · Iniciar sesión", body, LOGIN_CSS, js)
 
 
-def render_sso_espera(nombre, ident, enlace, error=""):
+def render_sso_espera(nombre, ident, enlace, error="", enlace_alt=""):
     """Mientras te identificas en UACloud: el botón que abre su página y la espera a que Windows devuelva el acceso."""
     alerta = f'<div class="alert" role="alert">{icon("alert-circle")}<span>{html.escape(error)}</span></div>' if error else ""
+    alternativa = (
+        f'<p>O abre <a href="{html.escape(enlace_alt)}" target="_blank" rel="noopener">este otro enlace</a>: al terminar, la universidad te '
+        'enseñará una página con un enlace para abrir la app. Haz clic derecho sobre él, elige «Copiar dirección del enlace» y pégala aquí.</p>'
+        if enlace_alt else ""
+    )
     body = f"""<div class="auth">
   <div class="auth-card">
     <div class="brand"><span class="brand-mark">{icon("book-open", 20)}</span>Aules · Resumen</div>
@@ -2650,16 +2660,17 @@ def render_sso_espera(nombre, ident, enlace, error=""):
     <ol class="sso-pasos">
       <li>Pulsa el botón: se abre la página de la universidad en otra pestaña.</li>
       <li>Identifícate allí con tu cuenta de UACloud.</li>
-      <li>Cuando el navegador pregunte si abre <strong>Aules</strong>, di que sí.</li>
+      <li>El navegador te preguntará si quiere abrir una aplicación (puede llamarse «Python» o «pythonw»): di que sí.</li>
     </ol>
     <a class="btn-primary sso-abrir" href="{html.escape(enlace)}" target="_blank" rel="noopener">{icon("external-link", 16)}Abrir UACloud</a>
     <p class="sso-estado" id="sso-estado" role="status">{icon("loader", 18, "spin")}<span>Esperando a que termines de iniciar sesión…</span></p>
     <details class="sso-pegar"{" open" if error else ""}>
       <summary>¿El navegador no vuelve a la app?</summary>
-      <p>Copia el enlace al que te lleva al terminar (empieza por <code>aulesapp://token=</code>) y pégalo aquí.</p>
+      <p>Copia el enlace al que te lleva al terminar (empieza por <code>moodlemobile://token=</code>) y pégalo aquí.</p>
+      {alternativa}
       <form method="post" action="/login/sso/pegar">
         <input type="hidden" name="id" value="{html.escape(ident)}">
-        <textarea name="enlace" placeholder="aulesapp://token=…" required spellcheck="false"></textarea>
+        <textarea name="enlace" placeholder="moodlemobile://token=…" required spellcheck="false"></textarea>
         <button class="btn-primary" type="submit">Continuar</button>
       </form>
     </details>

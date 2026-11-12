@@ -305,7 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             for viejo in [k for k, v in sso_estado.items() if time.time() - v.get("ts", 0) > 3600]:
                 del sso_estado[viejo]
             sso_estado[ident] = {"estado": "esperando", "mensaje": "", "enlace": enlace, "nombre": nombre, "ts": time.time()}
-        self._send(200, interfaz.render_sso_espera(nombre, ident, enlace))
+        self._send(200, interfaz.render_sso_espera(nombre, ident, enlace, "", core.sso_enlace_alternativo(enlace)))
 
     def _post_sso_pegar(self):
         """Si el navegador no devolvió el acceso solo, se pega aquí el enlace «aulesapp://token=…»."""
@@ -317,9 +317,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             completar_sso(form.get("enlace", [""])[0])
         except core.LoginError as e:
-            return self._send(400, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], str(e)))
+            return self._send(400, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], str(e), core.sso_enlace_alternativo(info["enlace"])))
         except requests.RequestException:
-            return self._send(502, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], "No se pudo conectar con Moodle. Inténtalo de nuevo."))
+            return self._send(502, interfaz.render_sso_espera(info["nombre"], ident, info["enlace"], "No se pudo conectar con Moodle. Inténtalo de nuevo.", core.sso_enlace_alternativo(info["enlace"])))
         self._redirect("/")
 
     def _post_sso_token(self):
@@ -744,6 +744,12 @@ def already_running():
 
 
 def main():
+    if "--quitar-esquema" in sys.argv:  # lo llama el desinstalador
+        try:
+            core.sso_quitar_esquema()
+        except (OSError, ImportError):
+            pass
+        return
     if "--sso" in sys.argv:
         i = sys.argv.index("--sso")
         return modo_callback_sso(sys.argv[i + 1] if len(sys.argv) > i + 1 else "")

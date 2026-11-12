@@ -300,7 +300,11 @@ def es_gva(base_url):
 # se abre en el navegador launch.php con un «passport» secreto; al terminar de identificarte, Moodle redirige a
 # «esquema://token=BASE64» y Windows le pasa ese enlace a esta app. La app no ve nunca la contraseña de la universidad.
 
-ESQUEMA_SSO = "aulesapp"
+# Moodle fuerza este esquema en el enlace de vuelta (ajuste tool_mobile/forcedurlscheme, que viene por defecto con este valor)
+# y se salta el que pida la app: pedir uno propio no sirve y el navegador se queda sin abrir nada.
+ESQUEMA_SSO = "moodlemobile"
+ESQUEMA_ANTIGUO = "aulesapp"  # el que usó la 1.10.0 sin éxito: se limpia al registrar el bueno
+ESQUEMA_ANTERIOR_PATH = os.path.join(BASE_DIR, "esquema_anterior.json")
 SSO_PENDIENTES_PATH = os.path.join(BASE_DIR, "sso_pendientes.json")
 SSO_CADUCA_SEGUNDOS = 15 * 60  # lo que Moodle recuerda los datos del inicio de sesión
 RE_TOKEN_SSO = re.compile(r"token=([A-Za-z0-9+/=%_\- ]{20,4000})")
@@ -344,11 +348,18 @@ def sso_iniciar(base_url):
     return sso_id(passport), f"{base_url}/admin/tool/mobile/launch.php?{parametros}"
 
 
+def sso_enlace_alternativo(enlace):
+    """El mismo enlace de inicio, pidiéndole a Moodle que al terminar enseñe una página con el enlace de vuelta a la vista
+    en vez de redirigir sin más. Sirve para copiarlo y pegarlo en la app si el navegador no la abre solo, sea cual sea
+    el esquema que use esa universidad."""
+    return enlace + "&confirmed=1"
+
+
 def sso_leer_enlace(texto):
     """Del enlace de vuelta («aulesapp://token=…») saca el identificador del sitio y el token de Moodle."""
     encontrado = RE_TOKEN_SSO.search((texto or "").strip())
     if not encontrado:
-        raise LoginSsoError("Ese enlace no lleva el acceso de UACloud: tiene que empezar por «aulesapp://token=».")
+        raise LoginSsoError("Ese enlace no lleva el acceso de UACloud: tiene que ser como «moodlemobile://token=…».")
     # Moodle no codifica el base64: los navegadores pueden cambiar «+» por un espacio o «=» por «%3D».
     crudo = unquote(encontrado.group(1)).strip().replace(" ", "+")
     try:
@@ -409,25 +420,81 @@ def comando_esquema():
     return f'"{python}" "{os.path.join(BASE_DIR, "servidor.py")}" --sso "%1"'
 
 
-def sso_registrar_esquema(registro=None):
-    """Da de alta «aulesapp://» en Windows solo para este usuario (HKCU, sin administrador). Es lo que permite que el
-    navegador le devuelva a la app el acceso. Devuelve True si ha escrito algo y False si ya estaba bien."""
-    if registro is None:
-        import winreg as registro
-    comando = comando_esquema()
-    raiz = rf"Software\Classes\{ESQUEMA_SSO}"
+def _clave_esquema(esquema):
+    return rf"Software\Classes\{esquema}"
+
+
+def _valor_registro(registro, ruta, nombre=None):
+    """Un valor de HKCU, o None si no existe. Sin nombre, el valor predeterminado de la clave."""
     try:
-        with registro.OpenKey(registro.HKEY_CURRENT_USER, rf"{raiz}\shell\open\command") as clave:
-            if registro.QueryValue(clave, None) == comando:
-                return False
+        with registro.OpenKey(registro.HKEY_CURRENT_USER, ruta) as clave:
+            return registro.QueryValue(clave, None) if nombre is None else registro.QueryValueEx(clave, nombre)[0]
     except OSError:
-        pass
+        return None
+
+
+def _borrar_esquema(registro, esquema):
+    raiz = _clave_esquema(esquema)
+    for sub in (r"\shell\open\command", r"\shell\open", r"\shell", ""):  # de dentro afuera: Windows no borra claves con hijos
+        try:
+            registro.DeleteKey(registro.HKEY_CURRENT_USER, raiz + sub)
+        except OSError:
+            pass
+
+
+def _es_nuestro(comando):
+    return bool(comando) and "servidor.py" in comando and "--sso" in comando
+
+
+def _escribir_esquema(registro, esquema, comando, descripcion="URL:Aules"):
+    raiz = _clave_esquema(esquema)
     with registro.CreateKey(registro.HKEY_CURRENT_USER, raiz) as clave:
-        registro.SetValue(clave, "", registro.REG_SZ, "URL:Aules")
+        registro.SetValue(clave, "", registro.REG_SZ, descripcion)
         registro.SetValueEx(clave, "URL Protocol", 0, registro.REG_SZ, "")
     with registro.CreateKey(registro.HKEY_CURRENT_USER, rf"{raiz}\shell\open\command") as clave:
         registro.SetValue(clave, "", registro.REG_SZ, comando)
-    log("Registrado el enlace aulesapp:// para el inicio de sesión con UACloud")
+
+
+def sso_registrar_esquema(registro=None):
+    """Da de alta «moodlemobile://» en Windows solo para este usuario (HKCU, sin administrador). Es lo que permite que el
+    navegador le devuelva a la app el acceso. Si otra aplicación (la de Moodle) lo tenía en HKCU, se apunta para devolvérselo
+    al quitar el nuestro. Devuelve True si ha escrito algo y False si ya estaba bien."""
+    if registro is None:
+        import winreg as registro
+    comando = comando_esquema()
+    raiz = _clave_esquema(ESQUEMA_SSO)
+    actual = _valor_registro(registro, rf"{raiz}\shell\open\command")
+    # La 1.10.0 dejó registrado «aulesapp», que Moodle nunca usa: se limpia (solo si es nuestro).
+    if _es_nuestro(_valor_registro(registro, rf"{_clave_esquema(ESQUEMA_ANTIGUO)}\shell\open\command")):
+        _borrar_esquema(registro, ESQUEMA_ANTIGUO)
+    if actual == comando:
+        return False
+    if actual and not _es_nuestro(actual):
+        previo = {"comando": actual, "descripcion": _valor_registro(registro, raiz) or "",
+                  "protocolo": _valor_registro(registro, raiz, "URL Protocol") is not None}
+        write_atomic(ESQUEMA_ANTERIOR_PATH, json.dumps(previo))
+    _escribir_esquema(registro, ESQUEMA_SSO, comando)
+    log(f"Registrado el enlace {ESQUEMA_SSO}:// para el inicio de sesión con UACloud")
+    return True
+
+
+def sso_quitar_esquema(registro=None):
+    """Quita el enlace de Windows de esta app y devuelve el que había antes, si había. Lo llama el desinstalador.
+    Devuelve True si había uno nuestro. Nunca toca el de otra aplicación."""
+    if registro is None:
+        import winreg as registro
+    if _es_nuestro(_valor_registro(registro, rf"{_clave_esquema(ESQUEMA_ANTIGUO)}\shell\open\command")):
+        _borrar_esquema(registro, ESQUEMA_ANTIGUO)
+    if not _es_nuestro(_valor_registro(registro, rf"{_clave_esquema(ESQUEMA_SSO)}\shell\open\command")):
+        return False
+    _borrar_esquema(registro, ESQUEMA_SSO)
+    try:
+        with open(ESQUEMA_ANTERIOR_PATH, "r", encoding="utf-8") as f:
+            previo = json.load(f)
+        _escribir_esquema(registro, ESQUEMA_SSO, previo["comando"], previo.get("descripcion", ""))
+        os.remove(ESQUEMA_ANTERIOR_PATH)
+    except (OSError, ValueError, KeyError):
+        pass  # no había otro que devolver
     return True
 
 

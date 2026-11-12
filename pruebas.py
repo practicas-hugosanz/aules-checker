@@ -740,6 +740,61 @@ class RevisionDeCuestionarios(unittest.TestCase):
             get.assert_not_called()  # el token nunca va a otra web
 
 
+class RegistroFalso:
+    """Un winreg de mentira, para probar el alta del enlace de Windows sin tocar el registro de verdad."""
+    HKEY_CURRENT_USER, REG_SZ = "HKCU", 1
+
+    class _Clave:
+        def __init__(self, ruta):
+            self.ruta = ruta
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def __init__(self):
+        self.claves, self.valores, self.raices = set(), {}, set()
+
+    def OpenKey(self, raiz, ruta):
+        self.raices.add(raiz)
+        if ruta not in self.claves:
+            raise FileNotFoundError(ruta)
+        return self._Clave(ruta)
+
+    def CreateKey(self, raiz, ruta):
+        self.raices.add(raiz)
+        partes = ruta.split("\\")
+        for i in range(1, len(partes) + 1):  # como Windows, crea también las claves de en medio
+            self.claves.add("\\".join(partes[:i]))
+        return self._Clave(ruta)
+
+    def DeleteKey(self, raiz, ruta):
+        self.raices.add(raiz)
+        if ruta not in self.claves:
+            raise FileNotFoundError(ruta)
+        if any(c.startswith(ruta + "\\") for c in self.claves):
+            raise PermissionError(ruta)  # como Windows: no borra una clave que aún tiene hijas
+        self.claves.discard(ruta)
+        for k in [k for k in self.valores if k[0] == ruta]:
+            del self.valores[k]
+
+    def SetValue(self, clave, sub, tipo, valor):
+        self.valores[(clave.ruta, sub)] = valor
+
+    def SetValueEx(self, clave, nombre, reservado, tipo, valor):
+        self.valores[(clave.ruta, nombre)] = valor
+
+    def QueryValue(self, clave, sub):
+        return self.valores.get((clave.ruta, sub or ""), "")
+
+    def QueryValueEx(self, clave, nombre):
+        if (clave.ruta, nombre) not in self.valores:
+            raise FileNotFoundError(nombre)
+        return self.valores[(clave.ruta, nombre)], self.REG_SZ
+
+
 class UACloud(unittest.TestCase):
     """Entrar en el Moodle de la Universidad de Alicante: usa el SSO de UACloud, no usuario y contraseña."""
 
@@ -748,13 +803,14 @@ class UACloud(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.carpeta, True)
         for parche in (mock.patch.object(core, "SESSION_PATH", os.path.join(self.carpeta, "session.json")),
                        mock.patch.object(core, "SSO_PENDIENTES_PATH", os.path.join(self.carpeta, "sso.json")),
+                       mock.patch.object(core, "ESQUEMA_ANTERIOR_PATH", os.path.join(self.carpeta, "anterior.json")),
                        mock.patch.object(core, "ACCOUNTS_DIR", self.carpeta), mock.patch.object(core, "log")):
             parche.start()
             self.addCleanup(parche.stop)
         self.clave = max(interfaz.PORTALES_SSO)  # el curso actual
         self.base = interfaz.PORTALES[self.clave][1]
 
-    def enlace(self, passport, token="TOKEN-de-prueba-1234567890", privado=None, base=None, esquema="aulesapp"):
+    def enlace(self, passport, token="TOKEN-de-prueba-1234567890", privado=None, base=None, esquema="moodlemobile"):
         """El enlace de vuelta que Moodle fabrica: base64(md5(sitio + passport) ::: token [::: token privado])."""
         firma = hashlib.md5(((base or self.base) + passport).encode()).hexdigest()
         crudo = ":::".join(x for x in (firma, token, privado) if x)
@@ -779,7 +835,7 @@ class UACloud(unittest.TestCase):
         ident, enlace, passport = self.iniciar()
         consulta = parse_qs(urlparse(enlace).query)
         self.assertTrue(enlace.startswith(f"{self.base}/admin/tool/mobile/launch.php?"))
-        self.assertEqual((consulta["service"], consulta["urlscheme"]), (["moodle_mobile_app"], ["aulesapp"]))
+        self.assertEqual((consulta["service"], consulta["urlscheme"]), (["moodle_mobile_app"], ["moodlemobile"]))
         self.assertRegex(passport, r"^[0-9a-f]{32}$")
         self.assertEqual(ident, core.sso_id(passport))
         self.assertNotEqual(self.iniciar()[2], passport)  # cada intento, un passport nuevo
@@ -802,9 +858,9 @@ class UACloud(unittest.TestCase):
         token = ">>>???>>>???"  # su base64 lleva «+» y «/»
         crudo = base64.b64encode(f"{siteid}:::{token}".encode()).decode()
         self.assertTrue("+" in crudo and "/" in crudo)
-        formas = [f"aulesapp://token={crudo}", f"moodlemobile://token={crudo}", f"  aulesapp://token={crudo}\n",
-                  f"aulesapp://token={crudo.replace('+', ' ')}", f"aulesapp://token={crudo.replace('=', '%3D').replace('/', '%2F')}",
-                  f"aulesapp://token={crudo.rstrip('=')}", f"aulesapp://token={base64.b64encode(f'{siteid}:::{token}:::privado'.encode()).decode()}"]
+        formas = [f"moodlemobile://token={crudo}", f"cualquierapp://token={crudo}", f"  moodlemobile://token={crudo}\n",
+                  f"moodlemobile://token={crudo.replace('+', ' ')}", f"moodlemobile://token={crudo.replace('=', '%3D').replace('/', '%2F')}",
+                  f"moodlemobile://token={crudo.rstrip('=')}", f"moodlemobile://token={base64.b64encode(f'{siteid}:::{token}:::privado'.encode()).decode()}"]
         for forma in formas:
             self.assertEqual(core.sso_leer_enlace(forma), (siteid, token), forma)
 
@@ -812,8 +868,8 @@ class UACloud(unittest.TestCase):
         _, _, passport = self.iniciar()
         casos = {
             "basura": "https://moodle.example/?x=1",
-            "base64 roto": "aulesapp://token=" + "%%%@@@" * 8,
-            "sin firma": "aulesapp://token=" + base64.b64encode(b"hola:::mundo-token-largo-123").decode(),
+            "base64 roto": "moodlemobile://token=" + "%%%@@@" * 8,
+            "sin firma": "moodlemobile://token=" + base64.b64encode(b"hola:::mundo-token-largo-123").decode(),
             "passport de otro": self.enlace("0" * 32),
             "otro sitio": self.enlace(passport, base="https://moodle2020-21.ua.es/moodle"),
         }
@@ -837,49 +893,62 @@ class UACloud(unittest.TestCase):
         self.assertEqual(error.exception.ident, ident)
         self.assertIsNone(core.load_session())
 
-    def test_el_enlace_de_windows_se_registra_solo_para_este_usuario(self):
-        class Clave:
-            def __init__(self, ruta):
-                self.ruta = ruta
+    CMD = r"Software\Classes\moodlemobile\shell\open\command"
 
-            def __enter__(self):
-                return self
+    @staticmethod
+    def poner(registro, esquema, comando):
+        """Deja registrada otra aplicación para un esquema, como si ya estuviera instalada."""
+        with registro.CreateKey("HKCU", rf"Software\Classes\{esquema}") as clave:
+            registro.SetValue(clave, "", 1, "URL:Otra app")
+            registro.SetValueEx(clave, "URL Protocol", 0, 1, "")
+        with registro.CreateKey("HKCU", rf"Software\Classes\{esquema}\shell\open\command") as clave:
+            registro.SetValue(clave, "", 1, comando)
 
-            def __exit__(self, *args):
-                return False
-
-        class Registro:
-            HKEY_CURRENT_USER, REG_SZ = "HKCU", 1
-
-            def __init__(self):
-                self.valores, self.raices = {}, set()
-
-            def OpenKey(self, raiz, ruta):
-                self.raices.add(raiz)
-                if (ruta, "") not in self.valores:
-                    raise FileNotFoundError(ruta)
-                return Clave(ruta)
-
-            def CreateKey(self, raiz, ruta):
-                self.raices.add(raiz)
-                return Clave(ruta)
-
-            def SetValue(self, clave, sub, tipo, valor):
-                self.valores[(clave.ruta, sub)] = valor
-
-            def SetValueEx(self, clave, nombre, reservado, tipo, valor):
-                self.valores[(clave.ruta, nombre)] = valor
-
-            def QueryValue(self, clave, sub):
-                return self.valores[(clave.ruta, sub or "")]
-
-        registro = Registro()
+    def test_el_enlace_de_windows_es_el_que_moodle_fuerza_y_solo_para_este_usuario(self):
+        self.assertEqual(core.ESQUEMA_SSO, "moodlemobile")  # Moodle ignora el esquema que pida la app
+        registro = RegistroFalso()
         self.assertTrue(core.sso_registrar_esquema(registro))
-        comando = registro.valores[(r"Software\Classes\aulesapp\shell\open\command", "")]
+        comando = registro.valores[(self.CMD, "")]
         self.assertTrue(comando.endswith('servidor.py" --sso "%1"'), comando)
-        self.assertEqual(registro.valores[(r"Software\Classes\aulesapp", "URL Protocol")], "")
+        self.assertEqual(registro.valores[(r"Software\Classes\moodlemobile", "URL Protocol")], "")
         self.assertEqual(registro.raices, {"HKCU"})  # nunca HKLM: no pide administrador
         self.assertFalse(core.sso_registrar_esquema(registro))  # ya estaba bien: no se vuelve a escribir
+        self.assertFalse(os.path.exists(core.ESQUEMA_ANTERIOR_PATH))
+        self.assertTrue(core.sso_quitar_esquema(registro))  # y al desinstalar no queda nada
+        self.assertEqual([c for c in registro.claves if "moodlemobile" in c], [])
+
+    def test_no_pisa_a_otra_aplicacion_sin_apuntarla_y_se_la_devuelve(self):
+        registro = RegistroFalso()
+        ajeno = r'"C:\Program Files\Moodle\Moodle.exe" "%1"'  # p. ej. la app de escritorio de Moodle
+        self.poner(registro, "moodlemobile", ajeno)
+        self.assertTrue(core.sso_registrar_esquema(registro))
+        self.assertIn("--sso", registro.valores[(self.CMD, "")])
+        self.assertTrue(os.path.exists(core.ESQUEMA_ANTERIOR_PATH))  # apuntada, para devolverla
+        self.assertTrue(core.sso_quitar_esquema(registro))
+        self.assertEqual(registro.valores[(self.CMD, "")], ajeno)  # el usuario recupera la suya
+        self.assertEqual(registro.valores[(r"Software\Classes\moodlemobile", "")], "URL:Otra app")
+        self.assertFalse(os.path.exists(core.ESQUEMA_ANTERIOR_PATH))
+        self.assertFalse(core.sso_quitar_esquema(registro))  # lo que queda no es nuestro: no se toca
+        self.assertEqual(registro.valores[(self.CMD, "")], ajeno)
+
+    def test_limpia_el_aulesapp_de_la_1_10_0_solo_si_es_nuestro(self):
+        nuestro = RegistroFalso()
+        self.poner(nuestro, "aulesapp", core.comando_esquema())
+        core.sso_registrar_esquema(nuestro)
+        self.assertNotIn(r"Software\Classes\aulesapp", nuestro.claves)
+        ajeno = RegistroFalso()
+        self.poner(ajeno, "aulesapp", r'"C:\Otra\app.exe" "%1"')
+        core.sso_registrar_esquema(ajeno)
+        self.assertIn(r"Software\Classes\aulesapp", ajeno.claves)  # no era nuestro: se deja como estaba
+
+    def test_la_espera_ofrece_una_salida_que_vale_con_cualquier_esquema(self):
+        inicio = "https://moodle.example/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=" + "a" * 32
+        alternativo = core.sso_enlace_alternativo(inicio)
+        self.assertTrue(alternativo.endswith("&confirmed=1"))
+        pagina = interfaz.render_sso_espera("Universidad de Alicante", "id1", inicio, "", alternativo)
+        self.assertIn("confirmed=1", pagina)
+        self.assertIn("Copiar dirección del enlace", pagina)
+        self.assertNotIn("este otro enlace", interfaz.render_sso_espera("UA", "id1", inicio))  # sin alternativa, no se menciona
 
     def test_lo_que_es_solo_de_la_gva_se_apaga_fuera_de_aules(self):
         for url in ("https://aules.edu.gva.es/fp", "https://aules.edu.gva.es/eso03", None, ""):
@@ -956,7 +1025,7 @@ class UACloudServidor(unittest.TestCase):
 
     def vuelta(self, passport, token="TOKEN-de-prueba-1234567890"):
         firma = hashlib.md5((self.base + passport).encode()).hexdigest()
-        return "aulesapp://token=" + base64.b64encode(f"{firma}:::{token}".encode()).decode()
+        return "moodlemobile://token=" + base64.b64encode(f"{firma}:::{token}".encode()).decode()
 
     def estado(self, ident):
         return self.web.get(f"{self.url}/login/sso/estado?id={ident}").json()["estado"]
@@ -964,6 +1033,7 @@ class UACloudServidor(unittest.TestCase):
     def test_de_punta_a_punta(self):
         pagina, ident, passport = self.empezar()
         self.assertIn("Abrir UACloud", pagina.text)
+        self.assertIn("confirmed=1", pagina.text)  # la salida de emergencia, para copiar el enlace
         self.registrar.assert_called_once()  # se dio de alta el enlace de Windows antes de abrir nada
         self.assertEqual(self.estado(ident), "esperando")
         self.servidor.modo_callback_sso(self.vuelta(passport))  # lo que ejecuta Windows con el enlace de vuelta
@@ -979,11 +1049,11 @@ class UACloudServidor(unittest.TestCase):
         self.assertEqual(self.estado(ident), "ok")
         mal = self.web.post(f"{self.url}/login/sso/pegar", data={"id": ident, "enlace": "esto no es un enlace"}, headers={"Origin": self.url})
         self.assertEqual(mal.status_code, 400)
-        self.assertIn("aulesapp://token=", mal.text)
+        self.assertIn("moodlemobile://token=", mal.text)
 
     def test_un_enlace_falso_no_estropea_el_intento_en_marcha(self):
         _, ident, passport = self.empezar()
-        self.servidor.modo_callback_sso("aulesapp://token=" + base64.b64encode(b"cualquier-cosa:::sin-firma-valida-12345").decode())
+        self.servidor.modo_callback_sso("moodlemobile://token=" + base64.b64encode(b"cualquier-cosa:::sin-firma-valida-12345").decode())
         self.assertEqual(self.estado(ident), "esperando")
         self.assertIsNone(core.load_session())
         self.servidor.modo_callback_sso(self.vuelta(passport))  # y el bueno sigue funcionando

@@ -1,17 +1,17 @@
 {
-  "version": "1.10.0",
+  "version": "1.10.1",
   "cambios": [
-    "Nuevo, en pruebas: entrar al Moodle de la Universidad de Alicante con UACloud. Eliges «Universidad de Alicante» en la lista de etapas, te identificas en la página de la UA y la app nunca ve tu contraseña",
-    "Fuera de Aules, se apagan las cosas que son solo de la GVA (tareas «GVA», calendario del centro y correos @edu.gva.es deducidos)",
-    "Windows recordará el enlace aulesapp:// (solo para tu usuario) la primera vez que entres con UACloud; el desinstalador lo quita"
+    "Arreglado: entrar con UACloud no hacía nada después de identificarte. Moodle fuerza el enlace de vuelta «moodlemobile://» y la app esperaba otro; ahora usa el correcto. Si ya había otra aplicación usando ese enlace, la app se lo apunta y se lo devuelve al desinstalar",
+    "En la pantalla de espera de UACloud hay una salida de emergencia por si el navegador no vuelve a la app: un enlace que enseña la dirección de vuelta para copiarla y pegarla",
+    "Arreglado: en «Ahora / Después», el nombre largo de una tarea pendiente se salía del recuadro; ahora ocupa hasta dos líneas"
   ],
   "archivos": {
-    "aules_checker.py": "9e4575288ef81ec11e8fa8908a97ee1be560d4cfe6ad77ae985869ca5760c4cf",
-    "servidor.py": "a02104fec90ff5b26f75903a4b15ad3d02ccdfac309558d7f4f8738c7101bb71",
-    "interfaz.py": "6b5d4af460de572ae8560fb9754fc906634ffaab8be688793b1837e1a5323be9",
+    "aules_checker.py": "57d677b80c964c5b87b1fbf61dd2293e5fdb3e02830dfe41b3bbd0e38b0ad8a9",
+    "servidor.py": "529ddf21fa2caee923816d701c77105aabd1163bfdc4f2dbc0aee68108a76c5a",
+    "interfaz.py": "48e27f7b1df83b8230b43c42887cc8b9478958e518aa9e9d538cd5d0bfe87d5d",
     "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
     "ia.py": "9e8098ebf428fab6fbcab71782e7ad97d17772e8b03f5869f6c055ee2abd82a9",
-    "actualizador.py": "375be044f03eec454fde80df2b326c12f6fb7fe75531f6aa02e0bc613c1320a5",
+    "actualizador.py": "a5742d390ebe8a56bdff9f4cedd5f73bda1532cb241cb66ac88b9be7fb9be0ce",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }

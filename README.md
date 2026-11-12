@@ -56,7 +56,7 @@ Sirve para **FP presencial, Bachillerato, ESO (Valencia, Alicante y Castellón),
 
 También puedes entrar al Moodle de la UA eligiendo «Universidad de Alicante» en la lista de etapas. Su Moodle no acepta usuario y contraseña, sino el inicio de sesión de UACloud, así que la app **no te pide la contraseña**: abre la página de la universidad en tu navegador, te identificas allí y Moodle le devuelve a la app un token de sesión.
 
-- La primera vez, Windows recordará el enlace `aulesapp://` (solo para tu usuario, sin administrador) para que el navegador pueda devolver ese acceso a la app. El desinstalador lo quita.
+- La primera vez, Windows recordará el enlace `moodlemobile://` (el que usa Moodle para volver a una app; solo para tu usuario, sin administrador) para que el navegador pueda devolver ese acceso a la app. Si ya había otra aplicación usándolo, la app se lo apunta y se lo devuelve al desinstalar.
 - Si el navegador no vuelve a la app, hay un apartado donde puedes pegar el enlace al que te lleva al terminar.
 - La UA tiene un Moodle por curso (`moodle2026-27.ua.es`), así que salen el de este curso y el anterior.
 - Lo que es solo de la GVA (tareas «GVA», calendario del centro, horario de Tutoría y correos `@edu.gva.es` deducidos) se apaga en la UA.
