@@ -117,6 +117,11 @@ def icon(name, size=16, cls=""):
     )
 
 
+def fecha_corta(ts):
+    d = datetime.fromtimestamp(ts)
+    return f"{DIAS[d.weekday()]} {d.day} {MESES[d.month - 1]}"
+
+
 def format_due(ts):
     if not ts:
         return "Sin fecha límite"
@@ -372,6 +377,7 @@ a.ahora:hover { border-color: var(--accent); }
 .pill-new { background: var(--green-soft); color: var(--green); }
 .pill-done { background: var(--green-soft); color: var(--green); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .pill-draft { background: var(--amber-soft); color: var(--amber); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+.pill-abre { background: var(--blue-soft); color: var(--blue); text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .pill-cambio { background: var(--amber-soft); color: var(--amber); }
 .cambios { margin: 6px 0 0; padding: 8px 12px 8px 26px; background: var(--amber-soft); color: var(--amber); border-radius: 10px;
   font-size: 13px; font-weight: 600; }
@@ -2175,6 +2181,10 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
         if a["status"]:
             cls, ic = ("pill-done", "check") if a["done"] else ("pill-draft", "pencil")
             pills += f'<span class="pill {cls}">{icon(ic, 12)}{html.escape(a["status"])}</span>'
+        # La entrega todavía no está abierta: Aules deja ver la tarea pero aún no se puede entregar.
+        desde = (a.get("entrega") or {}).get("desde") or 0
+        if desde > now_ts and not a["done"]:
+            pills += f'<span class="pill pill-abre">{icon("clock", 12)}Entrega desde el {fecha_corta(desde)}</span>'
 
         if a["summary"]:
             desc = _desc_html(a["summary"], "Ver descripción")
@@ -3666,8 +3676,10 @@ def render_revision(item, datos, nota_max="", intento_id=None, error=""):
     elif not intento:
         avisos.append((icon("clock"), "Todavía no has terminado este cuestionario. Cuando lo acabes, aquí verás sus preguntas y tus respuestas."))
     else:
-        if (datos or {}).get("sin_conexion"):
-            avisos.append((icon("triangle-alert"), "No se pudo conectar con Aules: esto es lo último guardado."))
+        if (datos or {}).get("offline"):
+            avisos.append((icon("triangle-alert"), "No se pudo conectar con Aules ahora mismo: esto es lo que la app guardó cuando lo hiciste."))
+        elif (datos or {}).get("guardado_local"):
+            avisos.append((icon("shield-check"), "Este cuestionario ya no está en Aules, pero la app guardó tus preguntas y respuestas de cuando lo hiciste."))
         if intento["error"]:
             avisos.append((icon("lock"), intento["error"]))
         preguntas = intento["preguntas"]

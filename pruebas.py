@@ -634,6 +634,35 @@ class Actualizaciones(unittest.TestCase):
             self.assertFalse(actualizador.restaurar_anterior(log=lambda m: None))
 
 
+class EntregaFutura(unittest.TestCase):
+    """Una tarea visible cuya entrega aún no está abierta: se avisa de desde cuándo se podrá entregar."""
+
+    MANANA = int(time.time()) + 3 * 86400
+
+    def tarea(self, **extra):
+        base = {"id": "assign_7", "name": "Práctica 6", "course": "Sistemas", "kind": "tarea", "done": False, "status": "",
+                "duedate": self.MANANA + 7 * 86400, "due_label": "Entrega", "summary": "", "attachments": []}
+        base.update(extra)
+        return interfaz.build_report([base], [], {"username": "x"}, [], 48)
+
+    def cuerpo(self, pagina):
+        return pagina.split("</style>", 1)[1]
+
+    def test_avisa_cuando_la_entrega_abre_en_el_futuro(self):
+        pagina = self.tarea(entrega={"desde": self.MANANA, "archivos": True})
+        self.assertIn("pill-abre", self.cuerpo(pagina))
+        self.assertIn("Entrega desde el", pagina)
+
+    def test_no_avisa_si_la_entrega_ya_esta_abierta(self):
+        ayer = int(time.time()) - 86400
+        self.assertNotIn("pill-abre\"", self.cuerpo(self.tarea(entrega={"desde": ayer, "archivos": True})))
+        self.assertNotIn("pill-abre\"", self.cuerpo(self.tarea()))  # sin fecha de apertura
+
+    def test_no_avisa_si_ya_esta_hecha(self):
+        pagina = self.tarea(done=True, status="Entregada", entrega={"desde": self.MANANA, "archivos": True})
+        self.assertNotIn("pill-abre\"", self.cuerpo(pagina))
+
+
 class EnunciadoEnPdf(unittest.TestCase):
     """Si el enunciado está en un PDF se enseña el PDF; si está en un Word, su texto."""
 
@@ -660,6 +689,97 @@ class EnunciadoEnPdf(unittest.TestCase):
         pagina = self.pagina("Práctica 5.pdf", [])
         self.assertNotIn('class="desc desc-pdf"', pagina)
         self.assertIn("Texto sacado del archivo", pagina)
+
+
+class RevisionSeRecuerda(unittest.TestCase):
+    """Lo que respondiste en un cuestionario se guarda y no se pierde aunque el profe lo quite o lo cierre después."""
+
+    HTML = ('<div class="que multichoice correct"><div class="formulation"><div class="qtext"><p>¿Cuánto es 2+2?</p></div>'
+            '<fieldset class="ablock"><div class="answer"><div class="r0 correct"><input type="radio" value="0" checked="checked" />'
+            '<div data-region="answer-label"><span class="answernumber">a. </span><div class="flex-fill">4</div></div></div></div></fieldset>'
+            '</div><div class="outcome"><div class="feedback"><div class="rightanswer">La respuesta correcta es: 4</div></div></div></div>')
+
+    def setUp(self):
+        self.carpeta = tempfile.mkdtemp(prefix="aules_rev_")
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        for p in (mock.patch.object(core, "carpeta", lambda s: self.carpeta), mock.patch.object(core, "log")):
+            p.start()
+            self.addCleanup(p.stop)
+        self.sesion = {"base_url": "https://aules.edu.gva.es/fp", "token": "t", "username": "u"}
+        self.ruta = os.path.join(self.carpeta, "revisiones", "quiz_55.json")
+
+    def respuesta(self, attempts=None, fallo_intentos=None, fallo_review=None):
+        """Simula Aules: `attempts` para la lista; `fallo_*` para lanzar una excepción en cada llamada."""
+        def fake(base, token, fn, params=None):
+            if fn == "mod_quiz_get_user_attempts":
+                if fallo_intentos:
+                    raise fallo_intentos
+                return {"attempts": attempts if attempts is not None else [{"id": 1, "attempt": 1, "timefinish": 100, "timemodified": 100}]}
+            if fn == "mod_quiz_get_attempt_review":
+                if fallo_review:
+                    raise fallo_review
+                return {"grade": "10", "questions": [{"slot": 1, "number": 1, "html": self.HTML, "type": "multichoice"}]}
+            raise AssertionError(fn)
+        return fake
+
+    def test_guarda_al_hacerlo_y_lo_sirve_igual_despues(self):
+        with mock.patch.object(core, "call_ws", self.respuesta()):
+            d = core.revision_cuestionario(self.sesion, "quiz_55")
+        self.assertEqual(d["intentos"][0]["preguntas"][0]["enunciado"], "¿Cuánto es 2+2?")
+        self.assertFalse(d.get("guardado_local"))
+        self.assertTrue(os.path.exists(self.ruta))
+
+    def _preparar_guardado(self):
+        with mock.patch.object(core, "call_ws", self.respuesta()):
+            core.revision_cuestionario(self.sesion, "quiz_55")
+        with open(self.ruta, encoding="utf-8") as _f:
+            self.guardado = _f.read()
+
+    def test_si_el_profe_lo_quita_sigue_viendose_lo_guardado(self):
+        self._preparar_guardado()
+        # El cuestionario ya no existe: la llamada falla.
+        with mock.patch.object(core, "call_ws", self.respuesta(fallo_intentos=RuntimeError("course module not found"))):
+            d = core.revision_cuestionario(self.sesion, "quiz_55")
+        self.assertTrue(d.get("guardado_local"))
+        self.assertFalse(d.get("offline"))
+        self.assertEqual(d["intentos"][0]["preguntas"][0]["enunciado"], "¿Cuánto es 2+2?")
+        with open(self.ruta, encoding="utf-8") as _f:
+            self.assertEqual(_f.read(), self.guardado)  # no se ha tocado el archivo
+
+    def test_si_el_profe_cierra_la_revision_no_pisa_lo_guardado(self):
+        self._preparar_guardado()
+        # El cuestionario sigue, pero ya no deja ver las preguntas (otro intento listado, review falla).
+        with mock.patch.object(core, "call_ws",
+                               self.respuesta(attempts=[{"id": 9, "attempt": 2, "timefinish": 200, "timemodified": 200}],
+                                              fallo_review=RuntimeError("review not allowed"))):
+            d = core.revision_cuestionario(self.sesion, "quiz_55")
+        self.assertTrue(d.get("guardado_local"))
+        self.assertEqual(d["intentos"][0]["preguntas"][0]["enunciado"], "¿Cuánto es 2+2?")  # lo guardado, no el error
+        self.assertNotIn("error", [i for i in d["intentos"] if i.get("error")])
+        with open(self.ruta, encoding="utf-8") as _f:
+            self.assertEqual(_f.read(), self.guardado)
+
+    def test_sin_conexion_se_marca_aparte(self):
+        self._preparar_guardado()
+        with mock.patch.object(core, "call_ws", self.respuesta(fallo_intentos=requests.ConnectionError("sin red"))):
+            d = core.revision_cuestionario(self.sesion, "quiz_55")
+        self.assertTrue(d.get("offline"))
+        self.assertTrue(d.get("guardado_local"))
+
+    def test_la_pagina_lo_dice_bien(self):
+        self._preparar_guardado()
+        import json as _json
+        guardada = _json.loads(self.guardado)
+        item = {"id": "quiz_55", "name": "T1B4", "course": "Sistemas"}
+        quitado = interfaz.render_revision(item, dict(guardada, guardado_local=True))
+        self.assertIn("ya no está en Aules", quitado)
+        offline = interfaz.render_revision(item, dict(guardada, guardado_local=True, offline=True))
+        self.assertIn("No se pudo conectar con Aules", offline)
+
+    def test_si_nunca_se_guardo_y_falla_no_inventa_nada(self):
+        with mock.patch.object(core, "call_ws", self.respuesta(fallo_intentos=RuntimeError("no existe"))):
+            with self.assertRaises(RuntimeError):
+                core.revision_cuestionario(self.sesion, "quiz_55")
 
 
 class RevisionDeCuestionarios(unittest.TestCase):

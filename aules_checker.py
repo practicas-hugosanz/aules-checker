@@ -1056,9 +1056,14 @@ def revision_cuestionario(session, quiz_id):
         intentos = call_ws(base, token, "mod_quiz_get_user_attempts", {"quizid": quizid, "status": "finished"}).get("attempts", [])
     except SessionExpired:
         raise
+    except requests.RequestException:
+        if guardada.get("intentos"):  # sin internet: se sirve lo que guardaste
+            return dict(guardada, guardado_local=True, offline=True)
+        raise
     except Exception:
-        if guardada:
-            return dict(guardada, sin_conexion=True)
+        # El cuestionario ya no responde (el profe lo quitó o lo cerró). Si lo guardaste, se sirve lo guardado.
+        if guardada.get("intentos"):
+            return dict(guardada, guardado_local=True)
         raise
     firma = [VERSION_LECTOR_REVISION] + [[a["id"], a.get("timemodified") or a.get("timefinish") or 0] for a in intentos]
     if guardada.get("firma") == firma:
@@ -1082,10 +1087,15 @@ def revision_cuestionario(session, quiz_id):
             intento["error"] = ("Aules no deja ver todavía las preguntas de este intento. Depende de cómo lo configuró "
                                 "el profe: a veces se pueden ver cuando cierra el cuestionario.")
         resultado["intentos"].append(intento)
-    # Solo se guarda si todo se pudo leer: si algún intento aún no se deja revisar, se vuelve a probar la próxima vez.
-    if resultado["intentos"] and not any(i["error"] for i in resultado["intentos"]):
+    # Una copia guardada completa no se reemplaza nunca por una peor: solo se reescribe si todo se ha podido releer.
+    completa = bool(resultado["intentos"]) and not any(i["error"] for i in resultado["intentos"])
+    if completa:
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
         write_atomic(ruta, json.dumps(resultado, ensure_ascii=False, indent=1))
+        return resultado
+    # Aules ya no deja ver todo (cerrado o quitado por el profe): se conserva y se sirve lo que guardaste cuando lo hiciste.
+    if guardada.get("intentos"):
+        return dict(guardada, guardado_local=True)
     return resultado
 
 
