@@ -609,22 +609,42 @@ def vigilar_codigo():
         os.execv(sys.executable, [sys.executable, os.path.join(core.BASE_DIR, "servidor.py")])
 
 
-# Si Aules está caído: el aviso, el tipo («mantenimiento» o «conexion») y desde cuándo, para el popup de la página.
+# Si la revisión falla: el aviso, el tipo y desde cuándo, para el popup de la página.
 # Se mantiene hasta que una revisión vuelva a ir bien (pulsar refrescar no lo borra).
 revision = {"error": "", "tipo": "", "desde": 0}
 
 
-def mensaje_de_error(e):
+def tipo_de_error(e):
+    """«mantenimiento»; «conexion» si Aules no responde o responde con error; «interno» si lo que falla es la app
+    (o el disco): así no se culpa a tu conexión de algo que no es."""
     if isinstance(e, core.AulesEnMantenimiento):
+        return "mantenimiento"
+    if isinstance(e, (requests.RequestException, RuntimeError)):
+        return "conexion"
+    return "interno"
+
+
+def mensaje_de_error(e):
+    tipo = tipo_de_error(e)
+    if tipo == "mantenimiento":
         return str(e)
-    return "No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."
+    if tipo == "conexion":
+        return "No se pudo conectar con Aules. Comprueba tu conexión e inténtalo de nuevo."
+    return "Algo ha fallado en la app al revisar Aules. Se volverá a intentar sola."
+
+
+def describir_error(e):
+    """Para el log: los cortes de red en una línea; los fallos de la app con todo el detalle, que hace falta para arreglarlos."""
+    if tipo_de_error(e) == "interno":
+        return "".join(traceback.format_exception(type(e), e, e.__traceback__)).strip().replace("\n", " | ")
+    return str(e)
 
 
 def anotar_fallo(e):
     if not revision["error"]:
         revision["desde"] = int(time.time())
     revision["error"] = mensaje_de_error(e)
-    revision["tipo"] = "mantenimiento" if isinstance(e, core.AulesEnMantenimiento) else "conexion"
+    revision["tipo"] = tipo_de_error(e)
 
 
 def anotar_exito():
@@ -648,7 +668,7 @@ def revisar_en_segundo_plano(session, esperar=False):
         except core.SessionExpired:
             pass  # sesion_caducada ya avisó y cerró la sesión
         except Exception as e:
-            core.log(f"ERROR al revisar Aules: {e}")
+            core.log(f"ERROR al revisar Aules: {describir_error(e)}")
             anotar_fallo(e)
         finally:
             check_lock.release()
@@ -729,7 +749,7 @@ def comprobar_periodicamente():
                 anotar_fallo(e)
                 # Sin conexión se repetiría el mismo error cada 90 s: solo se anota cuando cambia.
                 if str(e) != ultimo_error:
-                    core.log(f"ERROR en la comprobación automática: {e}")
+                    core.log(f"ERROR en la comprobación automática: {describir_error(e)}")
                 ultimo_error = str(e)
             finally:
                 check_lock.release()

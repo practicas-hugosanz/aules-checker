@@ -16,14 +16,18 @@ import time
 
 import requests
 
-VERSION = "1.10.2"
+VERSION = "1.11.0"
 # Usuario y repositorio de GitHub de donde salen las versiones nuevas.
 REPO = "practicas-hugosanz/aules-checker"
 RAMA = "main"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Lo que se publica y se actualiza. Nunca datos: nada de cuentas/, session.json ni ajustes.json.
-ARCHIVOS = ("aules_checker.py", "servidor.py", "interfaz.py", "temas.py", "ia.py", "actualizador.py", "requirements.txt")
+ARCHIVOS = (
+    "aules_checker.py", "servidor.py", "interfaz.py", "temas.py", "ia.py", "almacen.py", "actualizador.py",
+    "comun.py", "pagina_login.py", "pagina_ajustes.py", "pagina_horario.py", "pagina_materiales.py",
+    "pagina_profesores.py", "pagina_revision.py", "lector_preguntas.py", "lector_pdf.py", "requirements.txt"
+)
 NOMBRE_VALIDO = re.compile(r"^[a-z_]+\.(py|txt)$")
 HUELLA_VALIDA = re.compile(r"^[0-9a-f]{64}$")
 COMPROBAR_CADA_SEGUNDOS = 6 * 3600
@@ -36,7 +40,8 @@ CARPETA_PRUEBA = os.path.join(BASE_DIR, ".actualizacion")
 PRUEBA_ARRANQUE = r"""
 import os, sys
 sys.path.insert(0, os.getcwd())
-import actualizador, aules_checker, ia, interfaz, servidor, temas
+import actualizador, almacen, aules_checker, ia, interfaz, servidor, temas
+import comun, lector_pdf, lector_preguntas, pagina_ajustes, pagina_horario, pagina_login, pagina_materiales, pagina_profesores, pagina_revision
 sesion = {"username": "prueba", "fullname": "Ana Prueba", "firstname": "Ana"}
 ajustes = {"proveedor": "anthropic", "modelo": "", "api_key": "", "base_url": ""}
 paginas = [interfaz.build_report([], [], sesion, [], 48), interfaz.render_login(), interfaz.render_error("prueba"),

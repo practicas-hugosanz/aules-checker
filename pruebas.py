@@ -9,6 +9,8 @@ import html
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -19,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 import actualizador
+import almacen
 import aules_checker as core
 import ia
 import interfaz
@@ -1192,6 +1195,253 @@ class UACloudServidor(unittest.TestCase):
                               headers={"Origin": self.url})
         self.assertEqual(r.status_code, 400)
         self.assertIn("UACloud", r.text)
+
+
+class AlmacenSeguro(unittest.TestCase):
+    """El token de Aules y la clave de la IA se guardan cifrados; los archivos se escriben sin quedar a medias."""
+
+    TOKEN = "0123456789abcdef0123456789abcdef"
+    CLAVE = "sk-prueba-no-es-real-1234567890"
+
+    def setUp(self):
+        self.carpeta = tempfile.mkdtemp(prefix="aules_almacen_")
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        self.sesion_json = os.path.join(self.carpeta, "session.json")
+        self.ajustes_json = os.path.join(self.carpeta, "ajustes.json")
+        for p in (mock.patch.object(core, "SESSION_PATH", self.sesion_json),
+                  mock.patch.object(ia, "AJUSTES_PATH", self.ajustes_json)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def leer(self, ruta):
+        with open(ruta, encoding="utf-8") as f:
+            return f.read()
+
+    def escribir(self, ruta, datos):
+        import json
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(datos, f)
+
+    def test_cifrar_y_descifrar(self):
+        cifrado = almacen.cifrar(self.TOKEN)
+        self.assertTrue(almacen.es_cifrado(cifrado))
+        self.assertNotIn(self.TOKEN, cifrado)
+        self.assertEqual(almacen.descifrar(cifrado), self.TOKEN)
+        self.assertEqual(almacen.cifrar(""), "")
+        self.assertEqual(almacen.cifrar(cifrado), cifrado)  # no se cifra dos veces
+
+    def test_lo_antiguo_sin_cifrar_se_sigue_leyendo_y_lo_ajeno_no(self):
+        self.assertEqual(almacen.descifrar(self.TOKEN), self.TOKEN)
+        self.assertEqual(almacen.descifrar("dpapi:no-es-base64!!"), "")
+        self.assertEqual(almacen.descifrar("dpapi:" + base64.b64encode(b"de otro PC").decode()), "")
+        self.assertEqual(almacen.descifrar(None), "")
+
+    def test_la_sesion_va_cifrada_en_disco(self):
+        core.save_session({"username": "u", "base_url": core.DEFAULT_BASE_URL, "token": self.TOKEN})
+        self.assertNotIn(self.TOKEN, self.leer(self.sesion_json))
+        self.assertEqual(core.load_session()["token"], self.TOKEN)
+
+    def test_una_sesion_antigua_se_cifra_al_leerla(self):
+        self.escribir(self.sesion_json, {"username": "u", "base_url": core.DEFAULT_BASE_URL, "token": self.TOKEN})
+        self.assertEqual(core.load_session()["token"], self.TOKEN)
+        self.assertNotIn(self.TOKEN, self.leer(self.sesion_json))
+        self.assertEqual(core.load_session()["token"], self.TOKEN)
+
+    def test_una_sesion_de_otro_pc_pide_entrar_otra_vez(self):
+        ajeno = "dpapi:" + base64.b64encode(b"cifrado en otro ordenador").decode()
+        self.escribir(self.sesion_json, {"username": "u", "base_url": core.DEFAULT_BASE_URL, "token": ajeno})
+        self.assertIsNone(core.load_session())
+
+    def test_la_clave_de_la_ia_va_cifrada_en_disco(self):
+        ia.guardar_ajustes({"proveedor": "groq", "modelo": "m", "api_key": self.CLAVE, "base_url": ""})
+        self.assertNotIn(self.CLAVE, self.leer(self.ajustes_json))
+        self.assertEqual(ia.cargar_ajustes()["api_key"], self.CLAVE)
+
+    def test_una_clave_antigua_se_cifra_al_leerla(self):
+        self.escribir(self.ajustes_json, {"proveedor": "groq", "modelo": "m", "api_key": self.CLAVE, "base_url": ""})
+        self.assertEqual(ia.cargar_ajustes()["api_key"], self.CLAVE)
+        self.assertNotIn(self.CLAVE, self.leer(self.ajustes_json))
+
+    def test_reintenta_si_windows_bloquea_el_archivo(self):
+        ruta = os.path.join(self.carpeta, "informe.html")
+        real = os.replace
+        fallos = []
+
+        def bloqueado_dos_veces(a, b):
+            if len(fallos) < 2:
+                fallos.append(1)
+                raise PermissionError(5, "Acceso denegado")
+            return real(a, b)
+
+        with mock.patch.object(almacen.os, "replace", bloqueado_dos_veces), mock.patch.object(almacen.time, "sleep"):
+            almacen.escribir_atomico(ruta, "hola")
+        self.assertEqual(self.leer(ruta), "hola")
+        self.assertEqual(len(fallos), 2)
+
+    def test_si_sigue_bloqueado_avisa_y_no_deja_basura(self):
+        ruta = os.path.join(self.carpeta, "informe.html")
+        with mock.patch.object(almacen.os, "replace", side_effect=PermissionError(5, "Acceso denegado")), \
+                mock.patch.object(almacen.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                almacen.escribir_atomico(ruta, "hola")
+        self.assertEqual([n for n in os.listdir(self.carpeta) if n.endswith(".tmp")], [])
+
+    def test_dos_hilos_escribiendo_el_mismo_archivo_no_se_pisan(self):
+        ruta = os.path.join(self.carpeta, "informe.html")
+        errores = []
+
+        def escribir(texto):
+            try:
+                for _ in range(40):
+                    almacen.escribir_atomico(ruta, texto * 500)
+            except Exception as e:  # noqa: BLE001
+                errores.append(e)
+
+        hilos = [threading.Thread(target=escribir, args=(t,)) for t in "ab"]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join()
+        self.assertEqual(errores, [])
+        self.assertIn(self.leer(ruta), ("a" * 500, "b" * 500))
+
+
+class ErroresBienExplicados(unittest.TestCase):
+    """Un fallo de la app no se presenta como «sin conexión», y en el log queda el detalle para arreglarlo."""
+
+    @classmethod
+    def setUpClass(cls):
+        import servidor
+        cls.servidor = servidor
+
+    def test_red_y_aules_son_conexion(self):
+        for e in (requests.ConnectionError("x"), requests.ReadTimeout("x"), RuntimeError("Database connection failed")):
+            self.assertEqual(self.servidor.tipo_de_error(e), "conexion")
+            self.assertIn("conectar con Aules", self.servidor.mensaje_de_error(e))
+
+    def test_mantenimiento(self):
+        e = core.AulesEnMantenimiento(core.MENSAJE_MANTENIMIENTO)
+        self.assertEqual(self.servidor.tipo_de_error(e), "mantenimiento")
+        self.assertEqual(self.servidor.mensaje_de_error(e), core.MENSAJE_MANTENIMIENTO)
+
+    def test_fallo_interno_no_culpa_a_la_conexion_y_deja_detalle(self):
+        try:
+            raise PermissionError(5, "Acceso denegado")
+        except PermissionError as e:
+            error = e
+        self.assertEqual(self.servidor.tipo_de_error(error), "interno")
+        self.assertNotIn("conexión", self.servidor.mensaje_de_error(error))
+        detalle = self.servidor.describir_error(error)
+        self.assertIn("Traceback", detalle)
+        self.assertIn("test_fallo_interno_no_culpa_a_la_conexion_y_deja_detalle", detalle)
+
+
+class DisenoAccesible(unittest.TestCase):
+    """Que todo se pueda leer (contraste WCAG AA) en cada tema y modo, y que el móvil no se rompa."""
+
+    # (texto, fondos sobre los que aparece). El fondo de página de Retro es un «escritorio» verde azulado: lo que va
+    # encima se pinta en blanco en su propio CSS, así que ahí no se comprueban los colores de texto normales.
+    PARES = [
+        ("text", ["bg", "card", "card-2", "gray-soft"]),
+        # El gris también va sobre filas resaltadas: patio (verde), clase en curso, archivo elegido y tarea vencida.
+        ("muted", ["bg", "card", "card-2", "gray-soft", "green-soft", "amber-soft", "accent-soft", "red-soft"]),
+        ("accent-ink", ["bg", "card", "card-2", "accent-soft"]), ("green", ["green-soft", "card", "bg"]),
+        ("red", ["red-soft", "card", "bg"]), ("amber", ["amber-soft", "card"]), ("blue", ["blue-soft", "card"]),
+        ("on-accent", ["accent"]), ("rotulador-ink", ["rotulador"]), ("ahora-text", ["ahora-bg"]), ("ahora-muted", ["ahora-bg"]),
+    ]
+
+    @staticmethod
+    def contraste(a, b):
+        def lum(h):
+            h = h.lstrip("#")
+            h = "".join(c * 2 for c in h) if len(h) == 3 else h
+            canal = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+            canal = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in canal]
+            return 0.2126 * canal[0] + 0.7152 * canal[1] + 0.0722 * canal[2]
+        x, y = sorted((lum(a), lum(b)), reverse=True)
+        return (x + .05) / (y + .05)
+
+    def test_todos_los_temas_tienen_contraste_suficiente(self):
+        import comun
+        variables = lambda css: {m.group(1): m.group(2).strip() for m in re.finditer(r"--([a-z0-9-]+):\s*([^;]+);", css)}  # noqa: E731
+        base = {"claro": variables(comun.CLARO_VARS), "oscuro": variables(comun.OSCURO_VARS)}
+        fallos = []
+        for clave, tema in temas.TEMAS.items():
+            for modo in ("claro", "oscuro"):
+                if modo not in tema["modos"]:
+                    continue
+                v = dict(base[modo], **(tema.get(modo) or {}))
+                for texto, fondos in self.PARES:
+                    for fondo in fondos:
+                        if clave == "retro" and fondo == "bg":
+                            continue
+                        a, b = v.get(texto, ""), v.get(fondo, "")
+                        if re.fullmatch(r"#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?", a) and re.fullmatch(r"#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?", b):
+                            r = self.contraste(a, b)
+                            if r < 4.5:
+                                fallos.append(f"{clave}/{modo}: {texto} {a} sobre {fondo} {b} = {r:.2f}:1")
+        self.assertEqual(fallos, [], "colores que no llegan a 4,5:1")
+
+    def test_el_menu_tiene_nombre_aunque_solo_se_vean_los_iconos(self):
+        import comun
+        nav = comun._nav("inicio")
+        for nombre in ("Inicio", "Horario", "Materiales", "Profesores"):
+            self.assertIn(f'aria-label="{nombre}"', nav)
+
+    def test_nada_pone_blanco_fijo_sobre_el_naranja(self):
+        # Sobre --accent el texto tiene que ser var(--on-accent): cada tema y modo decide el color que se lee.
+        for nombre in ["comun.py", "interfaz.py"] + sorted(f for f in os.listdir(BASE_DIR) if f.startswith("pagina_")):
+            with open(os.path.join(BASE_DIR, nombre), encoding="utf-8") as f:
+                self.assertNotRegex(f.read(), r"var\(--accent-2\)\);\s*color:\s*#fff", nombre)
+
+    def test_en_el_movil_la_fecha_puede_bajar_de_linea(self):
+        # Si no, la fecha empujaba el botón «⋯» (y su menú) fuera de la tarjeta y de la pantalla.
+        import comun
+        movil = comun.REPORT_CSS.split("@media (max-width: 680px)")
+        self.assertTrue(any(re.search(r"\.due \{[^}]*flex-wrap: wrap", trozo.split("}\n}")[0]) for trozo in movil[1:]))
+
+
+class CompatibilidadConVersionesAntiguas(unittest.TestCase):
+    """Las apps ya instaladas tienen que poder actualizarse a esta versión: antes de aceptarla ejecutan SU prueba de
+    arranque contra el código nuevo, y descargan cada archivo que anuncia version.json desde GitHub."""
+
+    # Lo que la prueba de arranque de todas las versiones publicadas busca en interfaz.py.
+    CONTRATO = ("build_report", "render_ajustes", "render_error", "render_horario", "render_login", "render_profesores")
+
+    @staticmethod
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    def setUp(self):
+        if not os.path.isdir(os.path.join(BASE_DIR, ".git")) or shutil.which("git") is None:
+            self.skipTest("hace falta la copia de trabajo con git")
+
+    def test_interfaz_ofrece_lo_que_buscan_las_versiones_antiguas(self):
+        for nombre in self.CONTRATO:
+            self.assertTrue(callable(getattr(interfaz, nombre, None)), nombre)
+
+    def test_git_sube_todos_los_archivos_de_la_app(self):
+        ocultos = self.git("check-ignore", *actualizador.ARCHIVOS).stdout.split()
+        self.assertEqual(ocultos, [], "añádelos a la lista blanca de .gitignore")
+
+    def test_los_nombres_de_archivo_los_aceptan_las_versiones_antiguas(self):
+        for nombre in actualizador.ARCHIVOS:
+            self.assertRegex(nombre, r"^[a-z_]+\.(py|txt)$")  # el filtro de todas las versiones publicadas
+
+    def test_la_prueba_de_arranque_de_cada_version_publicada_acepta_este_codigo(self):
+        pruebas_distintas = {}
+        for etiqueta in self.git("tag", "--list", "v*").stdout.split():
+            fuente = self.git("show", f"{etiqueta}:actualizador.py").stdout
+            m = re.search(r'^PRUEBA_ARRANQUE = r?"""(.*?)"""', fuente, re.S | re.M)
+            if m:
+                pruebas_distintas.setdefault(m.group(1), []).append(etiqueta)
+        self.assertTrue(pruebas_distintas, "no se encontró ninguna prueba de arranque en las versiones publicadas")
+        for prueba, etiquetas in pruebas_distintas.items():
+            r = subprocess.run([sys.executable, "-c", prueba], cwd=BASE_DIR, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=120,
+                               env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+            self.assertTrue(r.returncode == 0 and r.stdout.strip().endswith("ok"),
+                            f"las versiones {', '.join(etiquetas)} rechazarían esta: {(r.stderr or r.stdout)[-500:]}")
 
 
 if __name__ == "__main__":

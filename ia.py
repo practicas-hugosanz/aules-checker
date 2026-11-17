@@ -5,6 +5,8 @@ import unicodedata
 
 import requests
 
+import almacen
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AJUSTES_PATH = os.path.join(BASE_DIR, "ajustes.json")
 
@@ -41,6 +43,16 @@ def cargar_ajustes():
             ajustes = json.load(f)
     except (OSError, ValueError):
         ajustes = {}
+    if not isinstance(ajustes, dict):
+        ajustes = {}
+    guardada = ajustes.get("api_key") or ""
+    ajustes["api_key"] = almacen.descifrar(guardada)
+    if guardada and not almacen.es_cifrado(guardada):
+        # Clave guardada por una versión anterior, sin cifrar: se cifra ya.
+        try:
+            guardar_ajustes(ajustes)
+        except OSError:
+            pass
     if ajustes.get("proveedor") == "opencode":
         # OpenCode Zen ya no está: su clave no vale para nada más, así que se borra.
         ajustes.update({"proveedor": "groq", "api_key": "", "base_url": "", "modelo": ""})
@@ -54,10 +66,9 @@ def cargar_ajustes():
 
 
 def guardar_ajustes(ajustes):
-    tmp = f"{AJUSTES_PATH}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(ajustes, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, AJUSTES_PATH)
+    # La clave de la IA va cifrada en disco: solo tu usuario de Windows puede leerla.
+    guardar = dict(ajustes, api_key=almacen.cifrar(ajustes.get("api_key") or ""))
+    almacen.escribir_atomico(AJUSTES_PATH, json.dumps(guardar, ensure_ascii=False, indent=2))
     try:
         os.chmod(AJUSTES_PATH, 0o600)
     except OSError:

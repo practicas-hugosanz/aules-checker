@@ -1,16 +1,30 @@
 {
-  "version": "1.10.2",
+  "version": "1.11.0",
   "cambios": [
-    "Tus cuestionarios hechos se siguen pudiendo repasar aunque el profe los quite o cierre la revisión después: la app guarda tus preguntas y respuestas en tu PC y nunca las pierde",
-    "Las tareas visibles cuya entrega aún no está abierta muestran «Entrega desde el [fecha]»"
+    "Más seguridad: el token de Aules y la clave de la IA se guardan cifrados en tu PC, como ya iba la contraseña",
+    "Más fiable: si el antivirus bloquea un archivo un instante, la app reintenta en vez de fallar, y si falla algo de la app ya no te dice que es culpa de tu conexión",
+    "En el móvil, el menú ⋯ y la fecha ya no se salen de la pantalla, y la cabecera aprovecha mejor el ancho",
+    "Todo se lee mejor: contraste revisado en los 7 temas (había textos invisibles en Suizo, Terminal, Cuaderno y Cristal)",
+    "Los botones principales llevan texto oscuro sobre el naranja, más fácil de leer",
+    "Código reorganizado por páginas por dentro, sin cambios visibles"
   ],
   "archivos": {
-    "aules_checker.py": "664c33304fabd11bda598e0cef532873b5b9a5cc1176d327211074742fe38919",
-    "servidor.py": "529ddf21fa2caee923816d701c77105aabd1163bfdc4f2dbc0aee68108a76c5a",
-    "interfaz.py": "03b7aa9b06d5c133b38c6feecf664c430175d0c0b1fb788ba81016c56b7d0663",
-    "temas.py": "e044200d792fd7cd6a3ce78676a81f1bef8e3c353bebb7d4e46f0248123b8078",
-    "ia.py": "9e8098ebf428fab6fbcab71782e7ad97d17772e8b03f5869f6c055ee2abd82a9",
-    "actualizador.py": "46747eee3483c6180d4e6fe795fa76fec96080fa02795d42fd35787560939029",
+    "aules_checker.py": "a1249961ca3f42de6ba685dffbaac200731966205bf91faf5b01cee82750f721",
+    "servidor.py": "72d8ac889dd2e4ae6a5d3d23b65435e450132480986af4c372970b0f8c5d299a",
+    "interfaz.py": "47c05f70a25c9ad6ef38c5d5137b2f0c9550b011f43c520d8502249da2004721",
+    "temas.py": "a7ce5a2aafd2fccbadf7aa0a5c7655dd7c79430d02f26e14b4ad2ec072e89f3b",
+    "ia.py": "e7a36782a6aef8e2b88ad6502f9cc9ffdb22d51c46cfddeec778c7c4da2e9246",
+    "almacen.py": "faace3e304423a4fdb36344791b5098353e191576889319aa41f117c8891849f",
+    "actualizador.py": "850bafc61737fcbe1aa7e01fdaaec2faac7fda9908df4416d5cea249209f274b",
+    "comun.py": "75ef20ffcf78bc0cf92f6558263e0c1f385726aec94251108730c8e2b69d3bfb",
+    "pagina_login.py": "5fdf43f00b30670ccdc7fe0b64f6c1b71d0664f5a72fbc28d865f3c6a27ff29a",
+    "pagina_ajustes.py": "1b43a8b03b7f93a270c14195376e90e41caeb374bf9b89b2d3269b0cc9f6781f",
+    "pagina_horario.py": "456abce2f9a038140c7f354979d3c2feadb293201c053d7acf160e0f647e440b",
+    "pagina_materiales.py": "862c3b53059554d0b817029cb9a457c26cf88884ab54276524a1a677c6cdf0c2",
+    "pagina_profesores.py": "d7591aafc5f7524034a9cde620fb12cd4f674824a70372017f7c6fac346cbbae",
+    "pagina_revision.py": "952e3fc460f7af3584d969ef1e2bc949b2ff036fb2428856bf916a441494a428",
+    "lector_preguntas.py": "da48c05ca1204f93c87f18f878ffd3e61f44bed4fc7f634cc1e3d0be92460614",
+    "lector_pdf.py": "ea2e555d26abdf064c59f629258d1abb4f0c430fc1ebcb44f7d9768f809e3d66",
     "requirements.txt": "f4324be332520ce78ea686af244e87b4d7704dad60c42e4c7a337e10d373337b"
   }
 }

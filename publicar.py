@@ -47,6 +47,15 @@ def comprobar_antes_de_publicar():
         sys.exit(f"La app no arranca, no se ha publicado nada:\n{error}")
 
 
+def comprobar_que_git_ve_todo():
+    """Cada archivo de la app tiene que subirse. Si .gitignore (que es una lista blanca) ocultara alguno, el aviso de
+    versión lo anunciaría igual y las apps instaladas no podrían descargarlo: no se actualizaría nadie."""
+    ocultos = git("check-ignore", *actualizador.ARCHIVOS, comprobar=False).splitlines()
+    if ocultos:
+        sys.exit(f"Estos archivos de la app no se subirían a GitHub: {', '.join(ocultos)}. "
+                 "Añádelos a la lista de .gitignore (con «!/nombre.py»). No se ha publicado nada.")
+
+
 def buscar_gh():
     """GitHub CLI, si está instalado: en el PATH o donde lo deja winget (un terminal ya abierto no lo ve en el PATH)."""
     ruta = shutil.which("gh")
@@ -99,6 +108,7 @@ def main():
         sys.exit(f"Falta conectar con GitHub:  git remote add origin https://github.com/{actualizador.REPO}.git")
     if git("tag", "--list", f"v{version}"):
         sys.exit(f"La versión {version} ya está publicada: usa un número mayor.")
+    comprobar_que_git_ve_todo()
     comprobar_antes_de_publicar()
 
     # Los commits se firman con la dirección privada de GitHub, no con tu correo real.

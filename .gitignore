@@ -9,6 +9,16 @@
 !/temas.py
 !/ia.py
 !/actualizador.py
+!/almacen.py
+!/comun.py
+!/pagina_login.py
+!/pagina_ajustes.py
+!/pagina_horario.py
+!/pagina_materiales.py
+!/pagina_profesores.py
+!/pagina_revision.py
+!/lector_preguntas.py
+!/lector_pdf.py
 !/requirements.txt
 !/version.json
 !/crear_instalador.py
