@@ -68,7 +68,7 @@ Cuando haya una versión nueva, la app te avisará con la lista de cambios y un 
 
 ## Privacidad
 
-Todo se queda en tu PC. La contraseña solo se guarda, cifrada con tu usuario de Windows, si marcas la casilla al iniciar sesión.
+Todo se queda en tu PC. La contraseña no se guarda: solo un token de sesión, cifrado con tu usuario de Windows. Si Aules cierra la sesión, tendrás que volver a entrar.
 
 Tu usuario, tu contraseña y tus datos de Aules solo se envían a Aules. La app también consulta este repositorio de GitHub para saber si hay una versión nueva (solo lee, no envía nada), y al abrir la página el navegador pide las tipografías a Google Fonts. Si configuras la IA, el enunciado de una tarea solo se manda a tu proveedor cuando pulsas «Resumen IA» o «Hacer borrador».
 

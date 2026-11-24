@@ -1091,8 +1091,9 @@ class UACloud(unittest.TestCase):
 
         gva = core.fetch_teachers(Ctx("https://aules.edu.gva.es/fp"), [{"id": 1}], {})
         ua = core.fetch_teachers(Ctx(self.base), [{"id": 1}], {})
-        self.assertTrue(gva["profesores"][0]["email_guess"].endswith("@edu.gva.es"))
-        self.assertEqual(ua["profesores"][0]["email_guess"], "")  # el formato de correo de la GVA no vale en la UA
+        # No se deducen correos de profesores a partir de su nombre, ni en la GVA ni fuera.
+        self.assertEqual(gva["profesores"][0]["email_guess"], "")
+        self.assertEqual(ua["profesores"][0]["email_guess"], "")
 
     def test_la_pagina_de_entrada_ofrece_uacloud(self):
         pagina = interfaz.render_login(portal=self.clave)
@@ -1442,6 +1443,92 @@ class CompatibilidadConVersionesAntiguas(unittest.TestCase):
                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
             self.assertTrue(r.returncode == 0 and r.stdout.strip().endswith("ok"),
                             f"las versiones {', '.join(etiquetas)} rechazarían esta: {(r.stderr or r.stdout)[-500:]}")
+
+
+class TraficoConAules(unittest.TestCase):
+    """La app no debe parecer un robot: pocas consultas, respeta las pausas que pide Aules y no se salta un cierre de sesión."""
+
+    BASE = "https://aules.edu.gva.es/fp"
+
+    def setUp(self):
+        core._pausa["hasta"] = 0.0
+
+    def tearDown(self):
+        core._pausa["hasta"] = 0.0
+
+    @staticmethod
+    def respuesta(status, texto="{}", headers=None):
+        r = requests.Response()
+        r.status_code, r._content = status, texto.encode("utf-8")
+        r.headers.update(headers or {})
+        return r
+
+    def test_se_presenta_como_lo_que_es(self):
+        agente = core.http.headers["User-Agent"]
+        self.assertIn("AulesChecker/", agente)
+        self.assertNotIn("python-requests", agente)
+        self.assertNotIn("Mozilla", agente)  # no se hace pasar por un navegador
+
+    def test_pocas_consultas_a_la_vez(self):
+        self.assertLessEqual(core.CONSULTAS_A_LA_VEZ, 2)
+
+    def test_si_aules_pide_esperar_no_se_le_vuelve_a_llamar(self):
+        with mock.patch.object(requests.Session, "request", return_value=self.respuesta(429, headers={"Retry-After": "1200"})) as req:
+            with self.assertRaises(core.AulesPideEsperar):
+                core.call_ws(self.BASE, "t", "core_webservice_get_site_info")
+            with self.assertRaises(core.AulesPideEsperar):
+                core.call_ws(self.BASE, "t", "core_webservice_get_site_info")
+        self.assertEqual(req.call_count, 1)  # la segunda ni siquiera sale del PC
+        self.assertGreater(core.segundos_de_pausa(), 1100)
+
+    def test_mantenimiento_pausa_al_menos_un_cuarto_de_hora(self):
+        pagina = "<html>Aules està en manteniment</html>"
+        with mock.patch.object(requests.Session, "request", return_value=self.respuesta(503, pagina, {"Retry-After": "300"})):
+            with self.assertRaises(core.AulesEnMantenimiento) as error:
+                core.call_ws(self.BASE, "t", "core_webservice_get_site_info")
+        self.assertEqual(str(error.exception), core.MENSAJE_MANTENIMIENTO)
+        self.assertGreater(core.segundos_de_pausa(), core.PAUSA_SI_AULES_PIDE_ESPERAR - 60)
+
+    def test_la_pausa_no_afecta_a_la_propia_app(self):
+        core.pausar_aules(600)
+        with mock.patch.object(requests.Session, "request", return_value=self.respuesta(200, "ok")) as req:
+            core.http.get("http://127.0.0.1:8765/health")
+        self.assertEqual(req.call_count, 1)
+
+    def test_no_vuelve_a_entrar_sola_si_aules_cierra_la_sesion(self):
+        sesion = {"username": "alumno", "base_url": self.BASE, "token": "t"}
+        with mock.patch.object(core, "login", side_effect=AssertionError("no debe volver a entrar sola")),                 mock.patch.object(core, "toast"), mock.patch.object(core, "clear_session") as cerrar,                 mock.patch.object(core, "borrar_contrasena") as borrar:
+            self.assertIsNone(core.sesion_caducada(sesion))
+        cerrar.assert_called_once()
+        borrar.assert_called_once()
+
+    def test_no_repregunta_por_tareas_hechas_que_no_han_cambiado(self):
+        ahora = time.time()
+        previo = {"done": True, "timemodified": 10, "estado_ts": ahora - 3600, "admite_entregas": True}
+        self.assertTrue(core._estado_reutilizable(previo, {"timemodified": 10}))
+        self.assertFalse(core._estado_reutilizable(previo, {"timemodified": 11}))  # el profe la ha cambiado
+        self.assertFalse(core._estado_reutilizable(dict(previo, done=False), {"timemodified": 10}))  # pendiente
+        viejo = dict(previo, estado_ts=ahora - core.RELEER_TAREAS_HECHAS_SEGUNDOS - 1)
+        self.assertFalse(core._estado_reutilizable(viejo, {"timemodified": 10}))
+        self.assertTrue(core._estado_reutilizable(dict(previo, done=False, admite_entregas=False), {"timemodified": 10}))
+        self.assertFalse(core._estado_reutilizable(None, {"timemodified": 10}))
+
+    def test_un_cuestionario_hecho_no_se_vuelve_a_preguntar(self):
+        llamadas = []
+
+        class Ctx:
+            course_names = {1: "Redes"}
+            course_params = {"courseids[0]": 1}
+            anteriores = {"quiz_5": {"id": "quiz_5", "done": True}}
+
+            def ws(self, funcion, params=None):
+                llamadas.append(funcion)
+                return {"quizzes": [{"id": 5, "course": 1, "name": "Test 1"}, {"id": 6, "course": 1, "name": "Test 2"}]}                     if funcion == "mod_quiz_get_quizzes_by_courses" else {"attempts": []}
+
+        with mock.patch.object(core, "download_attachments", return_value=[]):
+            items = core.fetch_quizzes(Ctx())
+        self.assertEqual(llamadas.count("mod_quiz_get_user_attempts"), 1)  # solo el que no estaba hecho
+        self.assertTrue(next(i for i in items if i["id"] == "quiz_5")["done"])
 
 
 if __name__ == "__main__":

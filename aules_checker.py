@@ -13,6 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as hora_del_dia, timedelta
+from email.utils import parsedate_to_datetime
 from requests.adapters import HTTPAdapter
 from urllib.parse import unquote, urlencode, urlparse
 from urllib3.util.retry import Retry
@@ -45,31 +46,20 @@ DAILY_SUMMARY_HOUR = 18
 MORNING_SUMMARY_HOUR = 7
 SERVER_HEALTH_URL = "http://127.0.0.1:8765/health"
 
-http = requests.Session()
-# Reintenta cortes de red y errores 502/503/504 puntuales de Aules (solo son consultas).
-http.mount(
-    "https://",
-    # Sin respetar «Retry-After»: en mantenimiento Aules pide volver en 300 s y cada consulta se quedaba colgada
-    # hasta 15 minutos (3 reintentos), con la app «revisando» sin parar. Sin lanzar error al agotar los reintentos,
-    # para poder ver qué respondió Aules (p. ej. su página de mantenimiento).
-    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=(502, 503, 504), allowed_methods=None,
-                                  respect_retry_after_header=False, raise_on_status=False),
-                pool_maxsize=12),
-)
-# Las consultas van en paralelo (Aules tarda lo mismo en una que en varias a la vez), pero nunca más de
-# estas a la vez, para no saturar el servidor del instituto.
-CONSULTAS_A_LA_VEZ = 8
-_limite_aules = threading.BoundedSemaphore(CONSULTAS_A_LA_VEZ)
-_log_lock = threading.Lock()
+def _version_app():
+    try:
+        with open(os.path.join(BASE_DIR, "version.json"), "r", encoding="utf-8") as f:
+            return str(json.load(f).get("version") or "?")
+    except (OSError, ValueError, AttributeError):
+        return "?"
 
 
-def en_paralelo(funcion, elementos):
-    """Como map(), pero a la vez. Devuelve los resultados en el mismo orden; si una falla, lanza su error."""
-    elementos = list(elementos)
-    if len(elementos) <= 1:
-        return [funcion(e) for e in elementos]
-    with ThreadPoolExecutor(min(CONSULTAS_A_LA_VEZ, len(elementos))) as ex:
-        return list(ex.map(funcion, elementos))
+# Cuando Aules responde 429 o 503 (saturado o en mantenimiento) no se le vuelve a llamar hasta que pase la pausa:
+# la que pida en «Retry-After» o, si no dice nada, esta. Nada de reintentar en bucle contra un servidor que pide parar.
+PAUSA_SI_AULES_PIDE_ESPERAR = 15 * 60
+PAUSA_MAXIMA = 2 * 3600
+_pausa = {"hasta": 0.0}
+_pausa_lock = threading.Lock()
 
 
 class LoginError(Exception):
@@ -84,12 +74,82 @@ class AulesEnMantenimiento(RuntimeError):
     pass
 
 
+class AulesPideEsperar(AulesEnMantenimiento):
+    """Aules ha pedido que se le deje en paz un rato (429/503): la app espera sin llamarle."""
+
+
+def _segundos_retry_after(r):
+    valor = (r.headers.get("Retry-After") or "").strip()
+    if valor.isdigit():
+        return int(valor)
+    try:
+        return parsedate_to_datetime(valor).timestamp() - datetime.now().timestamp()
+    except (TypeError, ValueError, IndexError):
+        return 0
+
+
+def pausar_aules(segundos):
+    with _pausa_lock:
+        hasta = datetime.now().timestamp() + min(max(segundos, 60), PAUSA_MAXIMA)
+        _pausa["hasta"] = max(_pausa["hasta"], hasta)
+
+
+def segundos_de_pausa():
+    return max(0, _pausa["hasta"] - datetime.now().timestamp())
+
+
+class _SesionAules(requests.Session):
+    """Sesión HTTP que respeta las pausas que pide Aules antes de hacer cualquier petición."""
+
+    def request(self, method, url, *args, **kwargs):
+        externa = urlparse(url).scheme == "https"  # lo de 127.0.0.1 es la propia app
+        if externa:
+            restante = segundos_de_pausa()
+            if restante > 0:
+                raise AulesPideEsperar(f"Aules ha pedido esperar: se volverá a mirar dentro de {int(restante // 60) + 1} min.")
+        r = super().request(method, url, *args, **kwargs)
+        if externa and r.status_code in (429, 503):
+            pausar_aules(max(_segundos_retry_after(r), PAUSA_SI_AULES_PIDE_ESPERAR))
+        return r
+
+
+http = _SesionAules()
+# La app se presenta tal cual es, sin hacerse pasar por un navegador ni por la app oficial de Moodle:
+# así los administradores de Aules saben qué es este tráfico y a quién preguntar.
+http.headers["User-Agent"] = (f"AulesChecker/{_version_app()} (app no oficial de alumno; "
+                              "+https://github.com/practicas-hugosanz/aules-checker)")
+# Solo reintenta, una vez y con calma, cortes de red y errores 502/504 puntuales. Los 429/503 no se reintentan:
+# activan la pausa de arriba. Sin lanzar error al agotar los reintentos, para poder ver qué respondió Aules.
+http.mount(
+    "https://",
+    HTTPAdapter(max_retries=Retry(total=1, backoff_factor=5, status_forcelist=(502, 504), allowed_methods=None,
+                                  respect_retry_after_header=True, raise_on_status=False),
+                pool_maxsize=4),
+)
+# Como mucho dos consultas a la vez: una persona navegando no hace más, y el servidor es compartido por todo el instituto.
+CONSULTAS_A_LA_VEZ = 2
+_limite_aules = threading.BoundedSemaphore(CONSULTAS_A_LA_VEZ)
+_log_lock = threading.Lock()
+
+
+def en_paralelo(funcion, elementos):
+    """Como map(), pero a la vez. Devuelve los resultados en el mismo orden; si una falla, lanza su error."""
+    elementos = list(elementos)
+    if len(elementos) <= 1:
+        return [funcion(e) for e in elementos]
+    with ThreadPoolExecutor(min(CONSULTAS_A_LA_VEZ, len(elementos))) as ex:
+        return list(ex.map(funcion, elementos))
+
+
 MENSAJE_MANTENIMIENTO = "Aules está en mantenimiento ahora mismo. Se muestra lo último guardado y se volverá a mirar solo."
+MENSAJE_SATURADO = "Aules ha pedido que se espere un rato. Se muestra lo último guardado y se volverá a mirar solo."
 
 
 def _comprobar_mantenimiento(r):
     if r.status_code == 503 and re.search(r"manteniment|mantenimiento|maintenance", r.text[:3000], re.I):
         raise AulesEnMantenimiento(MENSAJE_MANTENIMIENTO)
+    if r.status_code in (429, 503):
+        raise AulesPideEsperar(MENSAJE_SATURADO)
 
 
 write_atomic = almacen.escribir_atomico
@@ -174,20 +234,8 @@ def _ruta_credencial(session):
     return os.path.join(carpeta(session), "credencial.bin")
 
 
-def guardar_contrasena(session, password):
-    os.makedirs(carpeta(session), exist_ok=True)
-    write_atomic(_ruta_credencial(session), _dpapi(password.encode("utf-8"), cifrar=True))
-
-
-def leer_contrasena(session):
-    try:
-        with open(_ruta_credencial(session), "rb") as f:
-            return _dpapi(f.read(), cifrar=False).decode("utf-8")
-    except (OSError, ValueError):
-        return None
-
-
 def borrar_contrasena(session):
+    """La contraseña ya no se guarda; esto borra la que dejaran guardada versiones anteriores."""
     try:
         os.remove(_ruta_credencial(session))
     except OSError:
@@ -195,16 +243,12 @@ def borrar_contrasena(session):
 
 
 def sesion_caducada(session):
-    """Aules invalidó el token: vuelve a entrar con la contraseña guardada o, si no hay, cierra la sesión."""
-    password = leer_contrasena(session)
-    if password:
-        try:
-            nueva = login(session["username"], password, session.get("base_url") or DEFAULT_BASE_URL)
-            log("Sesión de Aules renovada automáticamente")
-            return nueva
-        except LoginError:
-            # La contraseña cambió en Aules: la guardada ya no sirve.
-            borrar_contrasena(session)
+    """Aules invalidó el token: se cierra la sesión y se te pide entrar otra vez.
+
+    Ya no se vuelve a entrar sola con una contraseña guardada: si Aules (o su administrador) cierra la sesión,
+    la app no debe saltárselo. Devuelve siempre None (se mantiene así para quien la llama)."""
+    # Por si quedó una contraseña guardada por una versión anterior: ya no se usa.
+    borrar_contrasena(session)
     log("La sesión de Aules ha caducado")
     clear_session()
     toast("Sesión de Aules caducada", "Abre Aules e inicia sesión de nuevo")
@@ -212,29 +256,26 @@ def sesion_caducada(session):
 
 
 def comprobar(session):
-    """run_check con reconexión automática. Devuelve la sesión vigente."""
+    """run_check; si Aules cierra la sesión, se cierra también aquí. Devuelve la sesión vigente."""
     try:
         run_check(session)
         return session
     except SessionExpired:
-        nueva = sesion_caducada(session)
-        if not nueva:
-            raise
-        run_check(nueva)
-        return nueva
+        sesion_caducada(session)
+        raise
 
 
 def get_token(base_url, username, password):
-    r = http.post(
-        f"{base_url}/login/token.php",
-        data={"username": username, "password": password, "service": "moodle_mobile_app"},
-        timeout=20,
-    )
-    if r.status_code == 503:
-        try:
-            _comprobar_mantenimiento(r)
-        except AulesEnMantenimiento:
-            raise LoginError("Aules está en mantenimiento ahora mismo. Prueba a entrar dentro de un rato.") from None
+    try:
+        r = http.post(
+            f"{base_url}/login/token.php",
+            data={"username": username, "password": password, "service": "moodle_mobile_app"},
+            timeout=20,
+        )
+        _comprobar_mantenimiento(r)
+    except AulesEnMantenimiento:
+        raise LoginError("Aules no está disponible ahora mismo (mantenimiento o saturado). "
+                         "Prueba a entrar dentro de un rato.") from None
     r.raise_for_status()
     data = r.json()
     if "token" not in data:
@@ -577,6 +618,10 @@ class Ctx:
     course_names: dict
     course_params: dict
     warnings: list = field(default_factory=list)
+    # Lo leído en la revisión anterior: tareas y exámenes por id, y nota mínima de cada cuestionario.
+    # Sirve para no volver a preguntar a Aules por lo que ya está hecho y no cambia.
+    anteriores: dict = field(default_factory=dict)
+    aprobar_anterior: dict = field(default_factory=dict)
 
     def ws(self, wsfunction, params=None):
         return call_ws(self.base_url, self.token, wsfunction, params)
@@ -702,12 +747,25 @@ def leer_enunciado_de_archivos(ctx, item):
             return
 
 
+# Una tarea ya entregada, calificada o que no admite entregas solo se vuelve a mirar en Aules si el profe la cambia
+# o, como mucho, cada este tiempo (por si la califican o la reabren).
+RELEER_TAREAS_HECHAS_SEGUNDOS = 12 * 3600
+
+
+def _estado_reutilizable(previo, item):
+    if not previo or not previo.get("estado_ts"):
+        return False
+    if previo.get("timemodified") != item["timemodified"]:
+        return False
+    if datetime.now().timestamp() - previo["estado_ts"] > RELEER_TAREAS_HECHAS_SEGUNDOS:
+        return False
+    return bool(previo.get("done")) or previo.get("admite_entregas") is False
+
+
 def fetch_assignments(ctx, module):
-    # Pedir todas las asignaturas juntas tarda lo mismo que pedirlas una detrás de otra (unos 12 s):
-    # por separado y a la vez, tarda lo que la más lenta.
-    respuestas = en_paralelo(lambda cid: ctx.ws(f"mod_{module}_get_assignments", {"courseids[0]": cid}),
-                             ctx.course_params.values())
-    pares = [(course, a) for data in respuestas for course in data.get("courses", []) for a in course.get("assignments", [])]
+    # Una sola consulta con todas las asignaturas, en vez de una por asignatura.
+    data = ctx.ws(f"mod_{module}_get_assignments", ctx.course_params) if ctx.course_params else {}
+    pares = [(course, a) for course in data.get("courses", []) for a in course.get("assignments", [])]
 
     def leer(par):
         course, a = par
@@ -728,7 +786,18 @@ def fetch_assignments(ctx, module):
         config = config_entrega(a)
         if config:
             item["entrega"] = config
-        admite_entregas = apply_submission_status(ctx, module, a["id"], item)
+        item["timemodified"] = a.get("timemodified") or 0
+        previo = ctx.anteriores.get(item["id"])
+        if _estado_reutilizable(previo, item):
+            # Ya estaba entregada/calificada (o no admite entregas) y el profe no la ha tocado: no se pregunta otra vez.
+            for clave in ("duedate", "due_label", "done", "status"):
+                item[clave] = previo.get(clave, item[clave])
+            admite_entregas, item["estado_ts"] = previo.get("admite_entregas"), previo["estado_ts"]
+        else:
+            admite_entregas = apply_submission_status(ctx, module, a["id"], item)
+            if admite_entregas is not None:
+                item["estado_ts"] = datetime.now().timestamp()
+        item["admite_entregas"] = admite_entregas
         # Lo que de verdad distingue una tarea de un apartado administrativo (p.ej. "Resultados
         # de Aprendizaje") es si admite entregas; la fecha o la nota solo valen como respaldo.
         if admite_entregas is None:
@@ -767,6 +836,10 @@ def fetch_quizzes(ctx):
             "done": False,
             "status": "",
         }
+        if (ctx.anteriores.get(item["id"]) or {}).get("done"):
+            # Un intento terminado no deja de estarlo: no hace falta volver a preguntarlo.
+            item["done"], item["status"] = True, "Hecho"
+            return item
         try:
             attempts = ctx.ws("mod_quiz_get_user_attempts", {"quizid": q["id"], "status": "finished"}).get("attempts", [])
             if attempts:
@@ -786,7 +859,6 @@ def fetch_quizzes(ctx):
 # por ejemplo) simplemente no viene.
 
 VERSION_LECTOR_REVISION = 3
-_revisiones_fallidas = {}
 
 
 def _guardar_imagen_revision(session, carpeta_destino):
@@ -878,28 +950,6 @@ def revision_cuestionario(session, quiz_id):
     if guardada.get("intentos"):
         return dict(guardada, guardado_local=True)
     return resultado
-
-
-def guardar_revisiones_nuevas(session, items):
-    """En segundo plano: guarda la revisión de los cuestionarios que acabas de terminar, para tenerla al momento
-    (y sin conexión). Si Aules aún no la deja ver, se vuelve a probar como mucho cada 6 horas."""
-    ahora = datetime.now().timestamp()
-    acc_dir = carpeta(session)
-    pendientes = [a for a in items if a["id"].startswith("quiz_") and a.get("done")
-                  and not os.path.exists(os.path.join(acc_dir, "revisiones", f"{a['id']}.json"))
-                  and ahora - _revisiones_fallidas.get(a["id"], 0) > 6 * 3600]
-
-    def guardar(a):
-        try:
-            if any(i["error"] for i in revision_cuestionario(session, a["id"])["intentos"]):
-                _revisiones_fallidas[a["id"]] = ahora
-        except SessionExpired:
-            raise
-        except Exception as e:
-            _revisiones_fallidas[a["id"]] = ahora
-            log(f"No se pudo guardar la revisión de «{a['name']}»: {e}")
-
-    en_paralelo(guardar, pendientes)
 
 
 def fetch_forum_posts(ctx):
@@ -1036,8 +1086,13 @@ def fetch_grades(ctx, courses, progreso=None):
 
 def _nota_para_aprobar(ctx, nota):
     nota["aprobar"] = ""
+    if nota["activity"] in ctx.aprobar_anterior:
+        # La nota mínima de un cuestionario casi nunca cambia: se reutiliza la ya leída.
+        nota["aprobar"], nota["aprobar_leido"] = ctx.aprobar_anterior[nota["activity"]], True
+        return
     try:
         minimo = ctx.ws("mod_quiz_get_user_best_grade", {"quizid": int(nota["activity"][5:])}).get("gradetopass")
+        nota["aprobar_leido"] = True
         if minimo and float(minimo) > 0:
             nota["aprobar"] = _numero(float(minimo))
     except SessionExpired:
@@ -1544,13 +1599,6 @@ def buscar_correos(texto, origen, correos):
         correos.setdefault(correo.lower(), set()).add(origen)
 
 
-def correo_deducido(firstname, lastname):
-    """Formato de la GVA: iniciales del nombre, punto y apellidos juntos (Ryan Adam Davis Tunmore → ra.davistunmore)."""
-    iniciales = "".join(p[0] for p in _letras(firstname))
-    apellidos = "".join(_letras(lastname))
-    return f"{iniciales}.{apellidos}@edu.gva.es" if iniciales and apellidos else ""
-
-
 def correos_en_archivos(acc_dir, cache, correos):
     """Correos escritos dentro de los PDF y documentos ya descargados. Solo relee los que han cambiado."""
     vigentes = {}
@@ -1607,8 +1655,8 @@ def fetch_teachers(ctx, courses, correos):
                 "courses": sorted(asignaturas.get(u["id"], [])),
                 "email": correo,
                 "email_origin": origen,
-                # El formato de correo de la GVA no vale para otras instituciones: ahí no se deduce.
-                "email_guess": "" if correo or not es_gva(ctx.base_url) else correo_deducido(u.get("firstname"), u.get("lastname")),
+                # Ya no se inventan correos a partir del nombre: solo se muestra el que el profe ha hecho público.
+                "email_guess": "",
                 "message_url": f"{ctx.base_url}/message/index.php?id={u['id']}",
             }
         )
@@ -2211,6 +2259,9 @@ def run_check(session):
         course_names={c["id"]: c["fullname"] for c in courses},
         # Moodle espera arrays como courseids[0], courseids[1]... en el POST.
         course_params={f"courseids[{i}]": c["id"] for i, c in enumerate(courses)},
+        anteriores={a["id"]: a for a in _load_aules_items(acc_dir) if isinstance(a, dict) and a.get("id")},
+        aprobar_anterior={n["activity"]: n.get("aprobar", "") for n in load_grades(session)
+                          if isinstance(n, dict) and n.get("aprobar_leido") and n.get("activity")},
     )
 
     progreso = {}
@@ -2296,12 +2347,8 @@ def run_check(session):
     save_state(acc_dir, state)
     send_notifications(session["username"], new_items, exam_reminders, new_posts, new_materials,
                        task_reminders, new_grades, new_messages, summary, new_practices, changed_items)
-    try:
-        guardar_revisiones_nuevas(session, items)
-    except SessionExpired:
-        pass
-    except Exception as e:
-        log(f"No se pudieron guardar las revisiones de los cuestionarios: {e}")
+    # La revisión de un cuestionario ya no se descarga sola en cada vuelta: solo cuando la abres tú en la app
+    # (una consulta, como abrirla en Aules), y entonces se guarda para verla sin conexión.
 
 
 def escribir_informe(session, warnings=None, cursos=None, actualizado=None):
@@ -2357,7 +2404,7 @@ def server_running():
 
 
 def start_server_in_background():
-    """Arranca la app sin abrir el navegador; ella se encarga de comprobar cada minuto y medio."""
+    """Arranca la app sin abrir el navegador; ella se encarga de comprobar cada media hora."""
     ejecutable = sys.executable
     if ejecutable.lower().endswith("python.exe"):
         ejecutable = ejecutable[: -len("python.exe")] + "pythonw.exe"
@@ -2374,7 +2421,7 @@ def start_server_in_background():
 
 
 def main():
-    # La app abierta ya comprueba Aules cada minuto y medio: aquí basta con asegurarse de que está en marcha.
+    # La app abierta ya comprueba Aules cada media hora: aquí basta con asegurarse de que está en marcha.
     if server_running():
         return
     if start_server_in_background():

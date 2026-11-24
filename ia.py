@@ -496,7 +496,7 @@ def limpiar_texto_pdf(textos_paginas):
     return salida
 
 
-# Texto ya extraído de cada archivo. La app relee los mismos enunciados cada minuto y medio, y sacar el texto
+# Texto ya extraído de cada archivo. La app relee los mismos enunciados cada media hora, y sacar el texto
 # de un PDF cuesta casi un segundo: solo se vuelve a leer si el archivo cambia (fecha o tamaño).
 _TEXTOS = {}
 _TEXTOS_MAX = 40

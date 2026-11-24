@@ -350,7 +350,7 @@ REPORT_JS_FIN = """
     }
   }
 
-  // La app revisa Aules cada minuto y medio: si ha cambiado algo, la página se recarga sola.
+  // La app revisa Aules cada media hora: si ha cambiado algo, la página se recarga sola.
   var informe = document.getElementById('informe');
   var firma = informe && informe.dataset.firma;
   function ocupado() {
@@ -1608,7 +1608,7 @@ def build_report(items, posts, session, warnings, urgent_hours, ia_cache=None, c
   {dialogo_propia}
   {DIALOGO_ENTREGA}
 
-  <footer>{icon("clock", 13)}Se actualiza sola cada minuto y medio mientras la app está abierta</footer>
+  <footer>{icon("clock", 13)}Se actualiza sola cada media hora mientras la app está abierta</footer>
 </div>"""
 
     return _page("Aules · Resumen", body, REPORT_CSS + PROPIAS_CSS + ENTREGA_CSS,

@@ -32,8 +32,6 @@ def render_login(error="", username="", can_cancel=False, portal="fp"):
           <div class="input">{icon("lock")}<input name="password" type="password" autocomplete="current-password" required>
             <button type="button" class="toggle" aria-label="Mostrar contraseña">{icon("eye")}</button></div>
         </label>
-        <label class="recordar"><input type="checkbox" name="recordar" value="1" checked>
-          <span>Volver a entrar solo si Aules cierra la sesión</span></label>
         <button class="btn-primary" type="submit" id="btn-entrar">Entrar</button>
       </div>
       <div class="sso-bloque" id="sso-bloque" hidden>
@@ -45,7 +43,7 @@ def render_login(error="", username="", can_cancel=False, portal="fp"):
       </div>
     </form>
     {cancel}
-    <p class="auth-note" id="nota-contrasena">{icon("shield-check", 14)}<span>Con la casilla marcada, la contraseña se guarda cifrada con tu usuario de Windows (solo tú, en este equipo, puedes descifrarla) y se borra al cerrar sesión. Sin marcarla, solo se guarda un token de sesión.</span></p>
+    <p class="auth-note" id="nota-contrasena">{icon("shield-check", 14)}<span>La contraseña no se guarda: solo un token de sesión, cifrado con tu usuario de Windows. Si Aules cierra la sesión, tendrás que volver a entrar.</span></p>
   </div>
 </div>"""
     js = """

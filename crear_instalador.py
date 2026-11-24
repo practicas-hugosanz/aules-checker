@@ -141,8 +141,8 @@ Actualizaciones
   cambios y un boton "Actualizar". Tus datos y ajustes se mantienen.
 
 Privacidad
-- Todo se queda en tu PC. La contrasena solo se guarda (cifrada con tu usuario
-  de Windows) si marcas la casilla al iniciar sesion.
+- Todo se queda en tu PC. La contrasena no se guarda: solo un token de sesion
+  cifrado con tu usuario de Windows.
 
 Desinstalar
 - Abre %LOCALAPPDATA%\\AulesApp y haz doble clic en DESINSTALAR.bat.

@@ -25,7 +25,11 @@ ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
 MAX_BODY = 100_000
 # Una entrega lleva los archivos en base64 (un tercio más grandes): hasta unos 60 MB de archivos.
 MAX_BODY_ENTREGA = 80_000_000
-CHECK_EVERY_SECONDS = 90
+# Cada media hora basta para enterarse a tiempo de tareas y notas, y es un tráfico como el de una persona.
+CHECK_EVERY_SECONDS = 30 * 60
+# Pulsar «Refrescar» no vuelve a pedirlo todo a Aules si la última revisión fue hace menos de esto.
+MIN_ENTRE_REVISIONES = 5 * 60
+ultima_revision = {"ts": 0.0}
 
 check_lock = threading.Lock()
 # Intentos de inicio de sesión con UACloud: id -> {estado: esperando|ok|error, mensaje, enlace, nombre, ts}
@@ -276,13 +280,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, interfaz.render_login(str(e), username, can_cancel, portal))
         except requests.RequestException:
             return self._send(502, interfaz.render_login("No se pudo conectar con Aules. Inténtalo de nuevo.", username, can_cancel, portal))
-        try:
-            if form.get("recordar", [""])[0] == "1":
-                core.guardar_contrasena(session, password)
-            else:
-                core.borrar_contrasena(session)
-        except OSError as e:
-            core.log(f"No se pudo guardar la contraseña cifrada: {e}")
+        # La contraseña no se guarda: solo el token de sesión. Se borra la que guardaran versiones anteriores.
+        core.borrar_contrasena(session)
         # Entras al momento: con lo último guardado de esta cuenta o, la primera vez, con «Preparando…».
         # Aules se revisa por detrás (esperando a la revisión automática si estaba en marcha con otra cuenta).
         revisar_en_segundo_plano(session, esperar=True)
@@ -653,7 +652,10 @@ def anotar_exito():
 
 def revisar_en_segundo_plano(session, esperar=False):
     """Revisa Aules sin hacer esperar a nadie. Si ya hay una revisión en marcha, no lanza otra
-    (salvo con `esperar`: entonces se pone a la cola, para cuando la que está en marcha es de otra cuenta)."""
+    (salvo con `esperar`: entonces se pone a la cola, para cuando la que está en marcha es de otra cuenta).
+    Sin `esperar`, tampoco revisa si la última revisión fue hace menos de MIN_ENTRE_REVISIONES: se queda lo guardado."""
+    if not esperar and time.time() - ultima_revision["ts"] < MIN_ENTRE_REVISIONES:
+        return
     # El cerrojo se coge aquí y no en el hilo: así la página que se pide justo después ya ve «revisando».
     libre = check_lock.acquire(blocking=False)
     if not libre and not esperar:
@@ -663,6 +665,7 @@ def revisar_en_segundo_plano(session, esperar=False):
         if not libre:
             check_lock.acquire()
         try:
+            ultima_revision["ts"] = time.time()
             core.comprobar(session)
             anotar_exito()
         except core.SessionExpired:
@@ -721,7 +724,8 @@ def modo_callback_sso(enlace):
 
 
 def comprobar_periodicamente():
-    """Revisa Aules cada minuto y medio mientras la app está abierta."""
+    """Revisa Aules cada CHECK_EVERY_SECONDS (media hora) mientras la app está abierta, contando también las
+    revisiones que pidas tú con «Refrescar», y nunca mientras Aules haya pedido esperar."""
     ultimo_error = None
     # La pantalla principal se guarda ya hecha: tras actualizar o reiniciar se rehace al momento con el código
     # nuevo y lo último guardado, sin esperar a que responda Aules.
@@ -735,8 +739,10 @@ def comprobar_periodicamente():
     time.sleep(10)
     while True:
         session = core.load_session()
-        if session and check_lock.acquire(blocking=False):
+        toca = (time.time() - ultima_revision["ts"] >= CHECK_EVERY_SECONDS and core.segundos_de_pausa() <= 0)
+        if session and toca and check_lock.acquire(blocking=False):
             try:
+                ultima_revision["ts"] = time.time()
                 core.comprobar(session)
                 anotar_exito()
                 if ultimo_error:
@@ -747,13 +753,13 @@ def comprobar_periodicamente():
             except Exception as e:
                 # La página avisa también de los fallos de la revisión automática (sin conexión, mantenimiento).
                 anotar_fallo(e)
-                # Sin conexión se repetiría el mismo error cada 90 s: solo se anota cuando cambia.
+                # Sin conexión se repetiría el mismo error en cada vuelta: solo se anota cuando cambia.
                 if str(e) != ultimo_error:
                     core.log(f"ERROR en la comprobación automática: {describir_error(e)}")
                 ultimo_error = str(e)
             finally:
                 check_lock.release()
-        time.sleep(CHECK_EVERY_SECONDS)
+        time.sleep(60)
 
 
 def already_running():
